@@ -21,6 +21,16 @@ impl std::str::FromStr for OutputFormat {
     }
 }
 
+/// RFC-4180 CSV field escaping: wrap in quotes if the value contains
+/// a comma, double-quote, or newline; double any internal quotes.
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 /// Print a list of serializable rows in the requested format.
 pub fn print_rows<T: Tabled + Serialize>(rows: &[T], fmt: OutputFormat) -> Result<()> {
     match fmt {
@@ -32,19 +42,21 @@ pub fn print_rows<T: Tabled + Serialize>(rows: &[T], fmt: OutputFormat) -> Resul
         }
         OutputFormat::Csv => {
             if rows.is_empty() { return Ok(()); }
-            // Use JSON as an intermediate to get field values
             let arr = serde_json::to_value(rows)?;
             if let serde_json::Value::Array(items) = arr {
-                // Header from first item keys
                 if let Some(serde_json::Value::Object(first)) = items.first() {
                     let headers: Vec<_> = first.keys().cloned().collect();
-                    println!("{}", headers.join(","));
+                    println!("{}", headers.iter().map(|h| csv_escape(h)).collect::<Vec<_>>().join(","));
                     for item in &items {
                         if let serde_json::Value::Object(map) = item {
                             let vals: Vec<String> = headers.iter()
-                                .map(|k| match &map[k] {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    v => v.to_string(),
+                                .map(|k| {
+                                    let raw = match &map[k] {
+                                        serde_json::Value::String(s) => s.clone(),
+                                        serde_json::Value::Null => String::new(),
+                                        v => v.to_string(),
+                                    };
+                                    csv_escape(&raw)
                                 })
                                 .collect();
                             println!("{}", vals.join(","));

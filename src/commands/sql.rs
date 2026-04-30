@@ -1,10 +1,11 @@
 use crate::client::LivyClient;
+use crate::commands::session::{extract_text, one_shot_sql, open_session};
 use crate::config::Config;
 use crate::output::OutputFormat;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
-use std::time::Duration;
+use chrono::Local;
 
 #[derive(Args)]
 pub struct SqlArgs {
@@ -40,6 +41,12 @@ pub enum SqlAction {
         #[arg(short, long, default_value = "csv")]
         fmt: String,
     },
+    /// Show recent SQL query history
+    History {
+        /// Maximum number of entries to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -73,6 +80,7 @@ pub async fn run(args: SqlArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
     match args.action {
         SqlAction::Query { sql, kind } => {
+            append_history(&sql);
             let session = open_session(&client, &kind, auth).await?;
             let result = client.run_statement(session, &sql, auth).await?;
             print_statement_result(&result, fmt)?;
@@ -80,38 +88,55 @@ pub async fn run(args: SqlArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
         }
 
         SqlAction::Inspect { target } => {
-            let session = open_session(&client, "sql", auth).await?;
-            let sql = match &target {
-                InspectTarget::Databases         => "SHOW DATABASES".to_string(),
+            let sql_str = match &target {
+                InspectTarget::Databases           => "SHOW DATABASES".to_string(),
                 InspectTarget::Tables { database } => format!("SHOW TABLES IN {}", database),
                 InspectTarget::Schema { table, database } =>
                     format!("DESCRIBE {}.{}", database, table),
                 InspectTarget::Partitions { table } =>
                     format!("SHOW PARTITIONS {}", table),
             };
-            let result = client.run_statement(session, &sql, auth).await?;
+            let result = one_shot_sql(&client, &sql_str, auth).await?;
             print_statement_result(&result, fmt)?;
-            client.delete_session(session, auth).await.ok();
         }
 
         SqlAction::Export { sql, output, fmt: out_fmt } => {
-            let session = open_session(&client, "sql", auth).await?;
-            let result = client.run_statement(session, &sql, auth).await?;
-            client.delete_session(session, auth).await.ok();
+            append_history(&sql);
+            let result = one_shot_sql(&client, &sql, auth).await?;
 
-            if result.status != "ok" {
-                anyhow::bail!("query failed: {} — {}", result.ename.unwrap_or_default(), result.evalue.unwrap_or_default());
-            }
-            let data = result.data.as_ref().and_then(|d| d.get("text/plain"))
-                .or_else(|| result.data.as_ref())
-                .ok_or_else(|| anyhow::anyhow!("no data in result"))?;
-
+            let text = extract_text(&result)?;
             let content = match out_fmt.as_str() {
-                "json" => serde_json::to_string_pretty(data)?,
-                _      => data.to_string(),  // plain text/csv passthrough
+                "json" => {
+                    // Try to pretty-print if the text payload is JSON; otherwise wrap it
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(v)  => serde_json::to_string_pretty(&v)?,
+                        Err(_) => text,
+                    }
+                }
+                _ => text,   // csv / plain text passthrough
             };
             std::fs::write(&output, &content)?;
             println!("{} exported {} bytes to '{}'", "✓".green(), content.len(), output.cyan());
+        }
+
+        SqlAction::History { limit } => {
+            let log_path = dirs::data_local_dir()
+                .map(|d| d.join("spark-ctrl").join("sql_history.log"));
+            match log_path {
+                None => anyhow::bail!("cannot determine data directory"),
+                Some(path) if !path.exists() => {
+                    println!("{}", "No SQL history yet.".dimmed());
+                }
+                Some(path) => {
+                    let content = std::fs::read_to_string(&path)?;
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start = lines.len().saturating_sub(limit);
+                    for line in &lines[start..] {
+                        println!("{}", line);
+                    }
+                    println!("{}", format!("  (log: {})", path.display()).dimmed());
+                }
+            }
         }
     }
     Ok(())
@@ -119,25 +144,19 @@ pub async fn run(args: SqlArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Create a Livy session and wait until idle.
-async fn open_session(client: &LivyClient, kind: &str, auth: &crate::config::Auth) -> Result<u64> {
-    let session = client.create_session(kind, auth).await?;
-    let id = session.id;
-    print!("{} creating session {}…", "⟳".cyan(), id);
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let s = client.get_session(id, auth).await?;
-        match s.state.as_str() {
-            "idle"  => { println!(" {}", "ready".green()); return Ok(id); }
-            "error" | "dead" => {
-                println!(" {}", "failed".red());
-                anyhow::bail!("session {} failed to start", id);
-            }
-            _ => print!("."),
-        }
-        use std::io::Write;
-        std::io::stdout().flush().ok();
-    }
+/// Append a SQL statement to the history log at
+/// `~/.local/share/spark-ctrl/sql_history.log`.
+/// Failures are silently ignored so a missing directory never breaks queries.
+fn append_history(sql: &str) {
+    let Ok(data_dir) = dirs::data_local_dir().ok_or(()) else { return };
+    let dir = data_dir.join("spark-ctrl");
+    if std::fs::create_dir_all(&dir).is_err() { return; }
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let line = format!("[{}] {}\n", ts, sql.replace('\n', " "));
+    let _ = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(dir.join("sql_history.log"))
+        .and_then(|mut f| { use std::io::Write; f.write_all(line.as_bytes()) });
 }
 
 fn print_statement_result(result: &crate::client::StatementResult, _fmt: OutputFormat) -> Result<()> {

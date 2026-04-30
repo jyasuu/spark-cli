@@ -29,6 +29,9 @@ pub struct Profile {
     pub auth: Auth,
     #[serde(default)]
     pub spark_conf: HashMap<String, String>,
+    /// Named submit-arg shortcuts: alias_name → list of "KEY=VALUE" strings
+    #[serde(default)]
+    pub aliases: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -70,9 +73,29 @@ impl std::str::FromStr for Backend {
 pub struct Auth {
     pub method:      Option<String>,
     pub username:    Option<String>,
-    /// Token / password. Prefer env var SPARK_CTRL_TOKEN in production.
+    /// Token / password. Prefer env var SPARK_CTRL_TOKEN at runtime.
     pub token:       Option<String>,
     pub keytab_path: Option<String>,
+}
+
+impl Auth {
+    /// Returns the effective token: env var `SPARK_CTRL_TOKEN` takes precedence
+    /// over the value stored in config, so secrets never need to be written to disk.
+    pub fn effective_token(&self) -> Option<String> {
+        std::env::var("SPARK_CTRL_TOKEN").ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.token.clone())
+    }
+
+    /// Return a copy of self with the token resolved to the effective value.
+    pub fn resolved(&self) -> Self {
+        Self {
+            method:      self.method.clone(),
+            username:    self.username.clone(),
+            token:       self.effective_token(),
+            keytab_path: self.keytab_path.clone(),
+        }
+    }
 }
 
 // ─── Config impl ──────────────────────────────────────────────────────────────

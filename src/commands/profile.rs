@@ -63,6 +63,34 @@ pub enum ProfileAction {
         #[arg(value_name = "NAME")]
         name: String,
     },
+    /// Manage submit aliases (shortcuts for spark-submit flags)
+    Alias {
+        #[command(subcommand)]
+        action: AliasAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AliasAction {
+    /// List all aliases for the active (or named) profile
+    List {
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Set an alias: name = KEY=VALUE pairs
+    Set {
+        /// Alias name (e.g. "my-job")
+        #[arg(value_name = "ALIAS")]
+        alias: String,
+        /// Key=value pairs to store (repeatable)
+        #[arg(value_name = "KEY=VALUE", required = true)]
+        pairs: Vec<String>,
+    },
+    /// Remove an alias
+    Remove {
+        #[arg(value_name = "ALIAS")]
+        alias: String,
+    },
 }
 
 pub async fn run(args: ProfileArgs, cfg: &mut Config) -> Result<()> {
@@ -76,6 +104,7 @@ pub async fn run(args: ProfileArgs, cfg: &mut Config) -> Result<()> {
         }
         ProfileAction::Remove { name } => remove(cfg, &name),
         ProfileAction::Switch { name } => switch(cfg, &name),
+        ProfileAction::Alias { action } => alias_cmd(cfg, action),
     }
 }
 
@@ -168,6 +197,7 @@ fn add(
         },
         spark_conf,
         description,
+        aliases: HashMap::new(),
     };
     cfg.add_profile(name.clone(), profile)?;
     println!("{} profile '{}' added", "✓".green(), name.cyan());
@@ -184,5 +214,56 @@ fn switch(cfg: &mut Config, name: &str) -> Result<()> {
     cfg.set_active_profile(name)?;
     cfg.save()?;
     println!("{} switched to profile '{}'", "✓".green(), name.cyan());
+    Ok(())
+}
+
+fn alias_cmd(cfg: &mut Config, action: AliasAction) -> Result<()> {
+    match action {
+        AliasAction::List { profile: profile_name } => {
+            let (name, profile) = if let Some(n) = profile_name.as_deref() {
+                let p = cfg.profiles.get(n)
+                    .ok_or_else(|| anyhow::anyhow!("profile '{}' not found", n))?;
+                (n.to_string(), p)
+            } else {
+                let (n, p) = cfg.active_profile()?;
+                (n.to_string(), p)
+            };
+            if profile.aliases.is_empty() {
+                println!("{}", format!("No aliases for profile '{}'.", name).yellow());
+                println!("Add one with: spark-ctrl profile alias set <name> key=value ...");
+            } else {
+                println!("{} aliases for '{}':", "Aliases".bold(), name.cyan());
+                for (alias, pairs) in &profile.aliases {
+                    println!("  {} {}", format!("{}:", alias).cyan(), pairs.join(" "));
+                }
+            }
+        }
+        AliasAction::Set { alias, pairs } => {
+            let (name, _) = cfg.active_profile()?;
+            let name = name.to_string();
+            // Validate all pairs are KEY=VALUE
+            for p in &pairs {
+                if !p.contains('=') {
+                    anyhow::bail!("pairs must be KEY=VALUE, got '{}'", p);
+                }
+            }
+            let profile = cfg.profiles.get_mut(&name)
+                .ok_or_else(|| anyhow::anyhow!("active profile '{}' not found", name))?;
+            profile.aliases.insert(alias.clone(), pairs);
+            cfg.save()?;
+            println!("{} alias '{}' saved", "✓".green(), alias.cyan());
+        }
+        AliasAction::Remove { alias } => {
+            let (name, _) = cfg.active_profile()?;
+            let name = name.to_string();
+            let profile = cfg.profiles.get_mut(&name)
+                .ok_or_else(|| anyhow::anyhow!("active profile '{}' not found", name))?;
+            if profile.aliases.remove(&alias).is_none() {
+                anyhow::bail!("alias '{}' not found", alias);
+            }
+            cfg.save()?;
+            println!("{} alias '{}' removed", "✓".green(), alias.cyan());
+        }
+    }
     Ok(())
 }

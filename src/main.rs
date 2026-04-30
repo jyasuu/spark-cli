@@ -58,6 +58,12 @@ async fn run() -> Result<()> {
     if let Some(profile) = &cli.profile {
         cfg.set_active_profile(profile)?;
     }
+    // Resolve SPARK_CTRL_TOKEN env var into auth for the active profile.
+    if let Some(name) = cfg.active_profile.clone() {
+        if let Some(profile) = cfg.profiles.get_mut(&name) {
+            profile.auth = profile.auth.resolved();
+        }
+    }
     let fmt = cli.format;
     match cli.command {
         Commands::Profile(args) => commands::profile::run(args, &mut cfg).await,
