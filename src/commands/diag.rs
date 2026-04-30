@@ -36,6 +36,15 @@ pub enum DiagAction {
         #[arg(long, default_value = "3.0")]
         threshold: f64,
     },
+    /// Show a Gantt chart of stage timelines for an application
+    Timeline {
+        /// Spark application ID
+        #[arg(value_name = "APP_ID")]
+        app_id: String,
+        /// Width (columns) for the chart bar area
+        #[arg(long, default_value = "55")]
+        width: usize,
+    },
 }
 
 pub async fn run(args: DiagArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
@@ -48,6 +57,8 @@ pub async fn run(args: DiagArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> 
         DiagAction::Ui { app_id, print_url } => ui(profile, app_id, print_url).await,
         DiagAction::Skew { app_id, stage_id, threshold } =>
             skew(&client, profile, &app_id, stage_id, threshold, fmt).await,
+        DiagAction::Timeline { app_id, width } =>
+            timeline(&client, profile, &app_id, width).await,
     }
 }
 
@@ -187,6 +198,56 @@ async fn skew(
         } else {
             println!("\n  {} Task distribution looks healthy (ratio {:.2}×).", "✓".green(), ratio);
         }
+    }
+    Ok(())
+}
+
+// ─── timeline (Gantt) ─────────────────────────────────────────────────────────
+
+async fn timeline(
+    client: &LivyClient,
+    profile: &crate::config::Profile,
+    app_id: &str,
+    width: usize,
+) -> Result<()> {
+    let path = format!("/api/v1/applications/{}/stages", app_id);
+    println!("{} Fetching stage list for app={}", "⟳".cyan(), app_id.cyan());
+
+    let data = match client.spark_api_get(&path, &profile.auth).await {
+        Err(e) => {
+            println!("{} Could not reach Spark REST API: {}", "⚠".yellow(), e);
+            println!("{}", "Ensure History Server is reachable at master_url.".dimmed());
+            return Ok(());
+        }
+        Ok(v) => v,
+    };
+
+    let stages = crate::gantt::stages_from_json(&data);
+    if stages.is_empty() {
+        // No real data — show a demo so the user can see the format
+        println!("{}", "(no stage data from API — showing demo chart)".yellow());
+        let demo = vec![
+            crate::gantt::GanttStage {
+                stage_id: 0, name: "parallelize at script.py:5".into(),
+                start_ms: 0, duration_ms: 1_200, status: "COMPLETE".into(), num_tasks: 4,
+            },
+            crate::gantt::GanttStage {
+                stage_id: 1, name: "map at script.py:12".into(),
+                start_ms: 1_100, duration_ms: 3_400, status: "COMPLETE".into(), num_tasks: 16,
+            },
+            crate::gantt::GanttStage {
+                stage_id: 2, name: "reduceByKey at script.py:18".into(),
+                start_ms: 4_300, duration_ms: 8_700, status: "ACTIVE".into(), num_tasks: 32,
+            },
+            crate::gantt::GanttStage {
+                stage_id: 3, name: "saveAsTextFile at script.py:22".into(),
+                start_ms: 12_900, duration_ms: 2_100, status: "PENDING".into(), num_tasks: 8,
+            },
+        ];
+        crate::gantt::render(&demo, width);
+    } else {
+        println!("{} Stage timeline — App: {}", "📊".cyan(), app_id.cyan());
+        crate::gantt::render(&stages, width);
     }
     Ok(())
 }

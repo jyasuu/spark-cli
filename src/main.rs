@@ -2,6 +2,9 @@ mod commands;
 mod config;
 mod client;
 mod output;
+mod notify;
+mod gantt;
+mod webhdfs;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

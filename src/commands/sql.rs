@@ -47,6 +47,12 @@ pub enum SqlAction {
         #[arg(short, long, default_value = "20")]
         limit: usize,
     },
+    /// Launch an interactive SQL REPL session
+    Repl {
+        /// Session kind: sql | spark | pyspark
+        #[arg(long, default_value = "sql")]
+        kind: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -137,6 +143,10 @@ pub async fn run(args: SqlArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
                     println!("{}", format!("  (log: {})", path.display()).dimmed());
                 }
             }
+        }
+
+        SqlAction::Repl { kind } => {
+            crate::commands::repl::run(profile, auth, &kind).await?;
         }
     }
     Ok(())

@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::output::{print_rows, OutputFormat};
+use crate::webhdfs::WebHdfsClient;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
@@ -87,54 +88,124 @@ pub async fn run(args: FsArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 // implementation would call HDFS HttpFS, S3 API, or WebHDFS directly.
 // ──────────────────────────────────────────────────────────────────────────
 
-async fn ls(_cfg: &Config, _profile: &crate::config::Profile, path: &str, _all: bool, long: bool, fmt: OutputFormat) -> Result<()> {
-    // Use the Livy SQL session to do DESCRIBE on the path
-    println!("{} {}", "ls".cyan().bold(), path);
+async fn ls(_cfg: &Config, profile: &crate::config::Profile, path: &str, all: bool, long: bool, fmt: OutputFormat) -> Result<()> {
+    // Detect WebHDFS vs S3/ADLS path and pick strategy
+    let hdfs_base = hdfs_base_url(profile, path);
 
-    // Emit the spark SQL that a real implementation would run
-    let sql = if path.ends_with(".parquet") || path.contains("delta") {
-        format!("DESCRIBE DETAIL '{}'", path)
-    } else {
-        // Would call WebHDFS or S3 list API here
-        format!("-- fs.ls('{}') → WebHDFS/S3 API call", path)
-    };
-
-    if long {
-        println!("{}", sql.dimmed());
-    }
-
-    // Demonstrate table output with placeholder data
     #[derive(Tabled, Serialize)]
     struct FileRow {
+        #[tabled(rename = "Type")]     type_sym: String,
         #[tabled(rename = "Name")]     name: String,
         #[tabled(rename = "Size")]     size: String,
         #[tabled(rename = "Modified")] modified: String,
         #[tabled(rename = "Owner")]    owner: String,
+        #[tabled(rename = "Perms")]    perms: String,
     }
 
-    println!("{}", "(simulated output — connect WebHDFS/S3 in production)".yellow());
-    let rows = vec![
-        FileRow { name: "_SUCCESS".into(),         size: "0 B".into(),   modified: "2024-11-01 12:00".into(), owner: "spark".into() },
-        FileRow { name: "part-00000.snappy.parquet".into(), size: "42 MB".into(),  modified: "2024-11-01 11:58".into(), owner: "spark".into() },
-        FileRow { name: "part-00001.snappy.parquet".into(), size: "41 MB".into(),  modified: "2024-11-01 11:58".into(), owner: "spark".into() },
-    ];
-    print_rows(&rows, fmt)
+    if let Some(base_url) = hdfs_base {
+        // Real WebHDFS call (blocking, run in spawn_blocking)
+        let path_owned = path.to_string();
+        let auth = profile.auth.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            WebHdfsClient::new(&base_url).ls(&path_owned, &auth)
+        }).await?;
+
+        match result {
+            Err(e) => {
+                println!("{} WebHDFS error: {}", "⚠".yellow(), e);
+                println!("{}", "Check that the namenode is reachable and WebHDFS is enabled.".dimmed());
+                return Ok(());
+            }
+            Ok(entries) => {
+                let rows: Vec<FileRow> = entries.iter()
+                    .filter(|e| all || !e.path_suffix.starts_with('.'))
+                    .map(|e| FileRow {
+                        type_sym: e.type_symbol().into(),
+                        name:     e.path_suffix.clone(),
+                        size:     if e.r#type == "DIRECTORY" { "-".into() } else { e.size_human() },
+                        modified: e.modified(),
+                        owner:    e.owner.clone(),
+                        perms:    if long { format!("{} r={}", e.permission, e.replication) } else { e.permission.clone() },
+                    })
+                    .collect();
+
+                if rows.is_empty() {
+                    println!("{}", "(empty directory)".dimmed());
+                } else {
+                    print_rows(&rows, fmt)?;
+                }
+            }
+        }
+    } else {
+        // Non-HDFS path: show informative stub
+        println!("{} {}", "ls".cyan().bold(), path);
+        println!("{}", "Path appears to be S3/ADLS/local — WebHDFS client only supports hdfs:// paths.".yellow());
+        println!("{}", "For S3: configure AWS CLI and use 'aws s3 ls'. For ADLS: use 'az storage fs'.".dimmed());
+
+        // Demo row so the output format is still visible
+        let rows = vec![
+            FileRow { type_sym: "-".into(), name: "part-00000.snappy.parquet".into(), size: "42.0 MB".into(),
+                      modified: "2024-11-01 11:58".into(), owner: "spark".into(), perms: "644".into() },
+            FileRow { type_sym: "-".into(), name: "part-00001.snappy.parquet".into(), size: "41.3 MB".into(),
+                      modified: "2024-11-01 11:58".into(), owner: "spark".into(), perms: "644".into() },
+        ];
+        println!("{}", "(demo output)".dimmed());
+        print_rows(&rows, fmt)?;
+    }
+    Ok(())
 }
 
 async fn cp(_cfg: &Config, _profile: &crate::config::Profile, src: &str, dst: &str) -> Result<()> {
     println!("{} {} → {}", "cp".cyan().bold(), src, dst);
-    println!("{}", "In production: streams via HDFS/S3/ADLS API with progress bar".yellow());
+    // WebHDFS has no native server-side copy; the standard approach is:
+    // 1. Open a read stream on src  2. Create dst  3. Stream bytes
+    // This requires chunked streaming which is out of scope for minreq.
+    // In production use: hadoop fs -cp, or an aws s3 cp / azcopy call.
+    println!("{}", "WebHDFS does not support server-side copy natively.".yellow());
+    println!("{}", "Use: hadoop fs -cp <src> <dst>  (or aws s3 cp / azcopy)".dimmed());
     Ok(())
 }
 
-async fn rm(_cfg: &Config, _profile: &crate::config::Profile, path: &str, recursive: bool) -> Result<()> {
-    if recursive {
-        println!("{} {} {}", "rm -r".cyan().bold(), path, "(recursive)".red());
+async fn rm(_cfg: &Config, profile: &crate::config::Profile, path: &str, recursive: bool) -> Result<()> {
+    let hdfs_base = hdfs_base_url(profile, path);
+
+    if let Some(base_url) = hdfs_base {
+        let path_owned = path.to_string();
+        let auth = profile.auth.clone();
+        let deleted = tokio::task::spawn_blocking(move || {
+            WebHdfsClient::new(&base_url).rm(&path_owned, recursive, &auth)
+        }).await??;
+
+        if deleted {
+            println!("{} deleted {}", "✓".green(), path.cyan());
+        } else {
+            println!("{} path not found or already deleted: {}", "⚠".yellow(), path);
+        }
     } else {
-        println!("{} {}", "rm".cyan().bold(), path);
+        if recursive {
+            println!("{} {} {}", "rm -r".cyan().bold(), path, "(recursive)".red());
+        } else {
+            println!("{} {}", "rm".cyan().bold(), path);
+        }
+        println!("{}", "Non-HDFS paths: use aws s3 rm / az storage fs file delete.".yellow());
     }
-    println!("{}", "In production: calls WebHDFS DELETE or s3.delete_object".yellow());
     Ok(())
+}
+
+/// Derive a WebHDFS base URL from the profile's master_url or from the path itself.
+/// Returns None if the path/profile doesn't look like HDFS.
+fn hdfs_base_url(profile: &crate::config::Profile, path: &str) -> Option<String> {
+    // If the path is an hdfs:// URI, extract host:port from it
+    if let Some(rest) = path.strip_prefix("hdfs://") {
+        let host_end = rest.find('/').unwrap_or(rest.len());
+        return Some(format!("http://{}", &rest[..host_end]));
+    }
+    // If master_url looks like a namenode HTTP endpoint (port 9870/50070/14000)
+    let url = &profile.master_url;
+    if url.contains(":9870") || url.contains(":50070") || url.contains(":14000") {
+        return Some(url.clone());
+    }
+    None
 }
 
 async fn table_op(_cfg: &Config, _profile: &crate::config::Profile, action: TableAction, fmt: OutputFormat) -> Result<()> {

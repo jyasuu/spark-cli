@@ -56,6 +56,9 @@ pub enum JobAction {
         /// Wait for completion and stream status
         #[arg(long, short)]
         wait: bool,
+        /// Send a desktop notification when the job finishes
+        #[arg(long)]
+        notify: bool,
     },
     /// Show the status of a batch job
     Status {
@@ -86,7 +89,7 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
     match args.action {
         JobAction::Submit { file, class, name, driver_memory, executor_memory,
-                            num_executors, executor_cores, conf, jars, py_files, args: app_args, wait } => {
+                            num_executors, executor_cores, conf, jars, py_files, args: app_args, wait, notify } => {
             let mut spark_conf: HashMap<String, String> = profile.spark_conf.clone();
             for kv in &conf {
                 let parts: Vec<&str> = kv.splitn(2, '=').collect();
@@ -105,8 +108,8 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
             println!("{} job submitted — id: {}", "✓".green(), batch.id.to_string().cyan());
             if let Some(n) = &name { println!("  name: {}", n); }
 
-            if wait {
-                watch_job(&client, batch.id, auth).await?;
+            if wait || notify {
+                watch_job(&client, batch.id, name.as_deref(), notify, auth).await?;
             }
         }
 
@@ -153,7 +156,7 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
 // ──────────────────────────────────────────────────────────────────────────
 
-async fn watch_job(client: &LivyClient, id: u64, auth: &crate::config::Auth) -> Result<()> {
+async fn watch_job(client: &LivyClient, id: u64, name: Option<&str>, notify: bool, auth: &crate::config::Auth) -> Result<()> {
     let pb = ProgressBar::new_spinner();
     pb.set_style(ProgressStyle::default_spinner()
         .template("{spinner:.cyan} [{elapsed}] {msg}")?
@@ -166,7 +169,16 @@ async fn watch_job(client: &LivyClient, id: u64, auth: &crate::config::Auth) -> 
         match batch.state.as_str() {
             "success" | "dead" | "error" => {
                 pb.finish_and_clear();
-                println!("Final state: {}", colorize_state(&batch.state));
+                let final_state = colorize_state(&batch.state);
+                println!("Final state: {}", final_state);
+                if notify {
+                    let job_label = name.unwrap_or("Job");
+                    let emoji = if batch.state == "success" { "✅" } else { "❌" };
+                    crate::notify::send(
+                        &format!("spark-ctrl — {}", job_label),
+                        &format!("{} {} (id: {})", emoji, batch.state.to_uppercase(), id),
+                    );
+                }
                 break;
             }
             _ => {}
