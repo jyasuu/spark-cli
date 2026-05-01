@@ -1,4 +1,3 @@
-
 //! Minimal mock Livy HTTP server built on raw tokio TCP.
 //! Zero extra dependencies beyond what is already in Cargo.toml.
 //!
@@ -26,7 +25,9 @@ struct PollState {
 
 impl PollState {
     fn new(running_polls: u32) -> Self {
-        Self { remaining_running: Arc::new(Mutex::new(running_polls)) }
+        Self {
+            remaining_running: Arc::new(Mutex::new(running_polls)),
+        }
     }
 
     /// Returns "running" until the counter hits 0, then "success".
@@ -67,8 +68,13 @@ impl MockLivy {
             .expect("mock: bind failed");
         let addr = listener.local_addr().expect("mock: local_addr");
         let (tx, rx) = oneshot::channel::<()>();
-        tokio::spawn(async move { serve(listener, rx, poll_state).await; });
-        MockLivy { addr, _shutdown: tx }
+        tokio::spawn(async move {
+            serve(listener, rx, poll_state).await;
+        });
+        MockLivy {
+            addr,
+            _shutdown: tx,
+        }
     }
 
     pub fn url(&self) -> String {
@@ -109,10 +115,15 @@ async fn handle_conn(mut stream: TcpStream, poll_state: Option<PollState>) {
         Ok(n) if n > 0 => n,
         _ => return,
     };
-    let req = match std::str::from_utf8(&buf[..n]) { Ok(s) => s, Err(_) => return };
+    let req = match std::str::from_utf8(&buf[..n]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
     let first_line = req.lines().next().unwrap_or("");
     let parts: Vec<&str> = first_line.splitn(3, ' ').collect();
-    if parts.len() < 2 { return; }
+    if parts.len() < 2 {
+        return;
+    }
     let method = parts[0];
     let path_qs = parts[1];
     let path_only = path_qs.split('?').next().unwrap_or(path_qs);
@@ -159,10 +170,10 @@ fn dispatch(
 
         // ── Livy session / statement API ──────────────────────────────────────
         ("POST", ["sessions"]) => json(session_info(1, "idle")),
-        ("GET",  ["sessions", _]) => json(session_info(1, "idle")),
+        ("GET", ["sessions", _]) => json(session_info(1, "idle")),
         ("DELETE", ["sessions", _]) => json(serde_json::json!({"msg": "deleted"})),
         ("POST", ["sessions", _, "statements"]) => json(statement_ok(0)),
-        ("GET",  ["sessions", _, "statements", _]) => json(statement_ok(0)),
+        ("GET", ["sessions", _, "statements", _]) => json(statement_ok(0)),
 
         // ── Spark REST API — stages ───────────────────────────────────────────
         ("GET", ["api", "v1", "applications", _, "stages"]) => json(mock_stages()),
@@ -176,15 +187,9 @@ fn dispatch(
         ("GET", _) if path.contains("op=OPEN") => {
             ("hello from mock webhdfs".to_string(), "text/plain")
         }
-        ("PUT", _) if path.contains("op=CREATE") => {
-            json(serde_json::json!({"boolean": true}))
-        }
-        ("PUT", _) if path.contains("op=MKDIRS") => {
-            json(serde_json::json!({"boolean": true}))
-        }
-        ("DELETE", _) if path.contains("/webhdfs/") => {
-            json(serde_json::json!({"boolean": true}))
-        }
+        ("PUT", _) if path.contains("op=CREATE") => json(serde_json::json!({"boolean": true})),
+        ("PUT", _) if path.contains("op=MKDIRS") => json(serde_json::json!({"boolean": true})),
+        ("DELETE", _) if path.contains("/webhdfs/") => json(serde_json::json!({"boolean": true})),
 
         _ => json(serde_json::json!({"error": "not found", "path": path})),
     }

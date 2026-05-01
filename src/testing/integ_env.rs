@@ -59,11 +59,10 @@ impl IntegEnv {
                 .unwrap_or_else(|_| "http://localhost:8181".to_string()),
             minio_url: std::env::var("MINIO_URL")
                 .unwrap_or_else(|_| "http://localhost:9000".to_string()),
-            postgres_dsn: std::env::var("POSTGRES_DSN")
-                .unwrap_or_else(|_| {
-                    "host=localhost port=5432 dbname=shop user=app password=secret sslmode=disable"
-                        .to_string()
-                }),
+            postgres_dsn: std::env::var("POSTGRES_DSN").unwrap_or_else(|_| {
+                "host=localhost port=5432 dbname=shop user=app password=secret sslmode=disable"
+                    .to_string()
+            }),
             spark_thrift: std::env::var("SPARK_THRIFT")
                 .unwrap_or_else(|_| "localhost:10000".to_string()),
         })

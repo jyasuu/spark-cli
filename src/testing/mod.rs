@@ -36,7 +36,7 @@ pub use mock_livy::MockLivy;
 pub use integ_env::IntegEnv;
 
 #[cfg(feature = "integration")]
-pub use helpers::{parse_count, sql as run_sql, latest_snapshot_op};
+pub use helpers::{latest_snapshot_op, parse_count, sql as run_sql};
 
 // ── shared profile builder ──────────────────────────────────────────────────
 
@@ -47,14 +47,14 @@ use std::collections::HashMap;
 /// Used by both mock-based unit tests and integration tests.
 pub fn test_profile(master_url: &str) -> Profile {
     Profile {
-        backend:     Backend::Livy,
-        master_url:  master_url.to_string(),
-        thrift_url:  None,
-        namespace:   None,
+        backend: Backend::Livy,
+        master_url: master_url.to_string(),
+        thrift_url: None,
+        namespace: None,
         description: None,
-        auth:        Auth::default(),
-        spark_conf:  HashMap::new(),
-        aliases:     HashMap::new(),
+        auth: Auth::default(),
+        spark_conf: HashMap::new(),
+        aliases: HashMap::new(),
     }
 }
 

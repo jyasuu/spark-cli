@@ -6,12 +6,12 @@
 use colored::Colorize;
 
 pub struct GanttStage {
-    pub stage_id:    u64,
-    pub name:        String,
-    pub start_ms:    i64,
+    pub stage_id: u64,
+    pub name: String,
+    pub start_ms: i64,
     pub duration_ms: i64,
-    pub status:      String,    // "COMPLETE" | "ACTIVE" | "FAILED" | "PENDING"
-    pub num_tasks:   u32,
+    pub status: String, // "COMPLETE" | "ACTIVE" | "FAILED" | "PENDING"
+    pub num_tasks: u32,
 }
 
 /// Render a list of stages as a coloured terminal Gantt chart.
@@ -33,37 +33,46 @@ pub fn render(stages: &[GanttStage], chart_width: usize) {
     let total_span = (t_max - t_min).max(1) as f64;
 
     // Column widths
-    let id_w   = 5;   // "Stage"
-    let stat_w = 9;   // "Status"
-    let task_w = 6;   // "Tasks"
+    let id_w = 5; // "Stage"
+    let stat_w = 9; // "Status"
+    let task_w = 6; // "Tasks"
     let name_w = 22;
-    let bar_w  = chart_width;
+    let bar_w = chart_width;
 
     // Header
     println!(
         "{:<id_w$} {:<name_w$} {:<stat_w$} {:<task_w$} {}",
-        "Stage".bold(), "Name".bold(), "Status".bold(), "Tasks".bold(), "Timeline".bold(),
-        id_w = id_w, name_w = name_w, stat_w = stat_w, task_w = task_w,
+        "Stage".bold(),
+        "Name".bold(),
+        "Status".bold(),
+        "Tasks".bold(),
+        "Timeline".bold(),
+        id_w = id_w,
+        name_w = name_w,
+        stat_w = stat_w,
+        task_w = task_w,
     );
-    println!("{}", "─".repeat(id_w + 1 + name_w + 1 + stat_w + 1 + task_w + 1 + bar_w));
+    println!(
+        "{}",
+        "─".repeat(id_w + 1 + name_w + 1 + stat_w + 1 + task_w + 1 + bar_w)
+    );
 
     for s in stages {
         let offset_frac = (s.start_ms - t_min) as f64 / total_span;
-        let dur_frac    = s.duration_ms as f64 / total_span;
+        let dur_frac = s.duration_ms as f64 / total_span;
 
         let offset_cols = (offset_frac * bar_w as f64).round() as usize;
-        let bar_cols    = ((dur_frac * bar_w as f64).round() as usize).max(1);
-        let bar_cols    = bar_cols.min(bar_w.saturating_sub(offset_cols));
+        let bar_cols = ((dur_frac * bar_w as f64).round() as usize).max(1);
+        let bar_cols = bar_cols.min(bar_w.saturating_sub(offset_cols));
 
         let bar_char = match s.status.to_uppercase().as_str() {
-            "COMPLETE"  => "█".green(),
-            "ACTIVE"    => "▓".yellow(),
-            "FAILED"    => "█".red(),
-            _           => "░".dimmed(),
+            "COMPLETE" => "█".green(),
+            "ACTIVE" => "▓".yellow(),
+            "FAILED" => "█".red(),
+            _ => "░".dimmed(),
         };
 
-        let bar: String = " ".repeat(offset_cols)
-            + &bar_char.to_string().repeat(bar_cols);
+        let bar: String = " ".repeat(offset_cols) + &bar_char.to_string().repeat(bar_cols);
 
         // Truncate name
         let name_str = if s.name.len() > name_w {
@@ -74,34 +83,55 @@ pub fn render(stages: &[GanttStage], chart_width: usize) {
 
         let status_colored = match s.status.to_uppercase().as_str() {
             "COMPLETE" => s.status.green().to_string(),
-            "ACTIVE"   => s.status.yellow().to_string(),
-            "FAILED"   => s.status.red().to_string(),
-            _          => s.status.dimmed().to_string(),
+            "ACTIVE" => s.status.yellow().to_string(),
+            "FAILED" => s.status.red().to_string(),
+            _ => s.status.dimmed().to_string(),
         };
 
         println!(
             "{:<id_w$} {:<name_w$} {:<stat_w$} {:<task_w$} {}",
-            s.stage_id, name_str, status_colored, s.num_tasks, bar,
-            id_w = id_w, name_w = name_w, stat_w = stat_w, task_w = task_w,
+            s.stage_id,
+            name_str,
+            status_colored,
+            s.num_tasks,
+            bar,
+            id_w = id_w,
+            name_w = name_w,
+            stat_w = stat_w,
+            task_w = task_w,
         );
     }
 
     // Time axis
     let axis = format!(
         "{:<id_w$} {:<name_w$} {:<stat_w$} {:<task_w$} |{:─<half$}+{:─<half$}|",
-        "", "", "", "",
-        "", "",
-        id_w = id_w, name_w = name_w, stat_w = stat_w, task_w = task_w,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        id_w = id_w,
+        name_w = name_w,
+        stat_w = stat_w,
+        task_w = task_w,
         half = bar_w / 2 - 1,
     );
     println!("{}", axis.dimmed());
 
-    let elapsed_s = total_span as f64 / 1000.0;
+    let elapsed_s = total_span / 1000.0;
     println!(
         "{:<id_w$} {:<name_w$} {:<stat_w$} {:<task_w$} 0{:>mid$}{:.1}s",
-        "", "", "", "",
-        "", elapsed_s,
-        id_w = id_w, name_w = name_w, stat_w = stat_w, task_w = task_w,
+        "",
+        "",
+        "",
+        "",
+        "",
+        elapsed_s,
+        id_w = id_w,
+        name_w = name_w,
+        stat_w = stat_w,
+        task_w = task_w,
         mid = bar_w / 2 - 1,
     );
 }
@@ -110,28 +140,37 @@ pub fn render(stages: &[GanttStage], chart_width: usize) {
 pub fn stages_from_json(value: &serde_json::Value) -> Vec<GanttStage> {
     let arr = match value.as_array() {
         Some(a) => a,
-        None    => return vec![],
+        None => return vec![],
     };
 
-    let mut stages: Vec<GanttStage> = arr.iter().filter_map(|s| {
-        let stage_id    = s["stageId"].as_u64()?;
-        let status      = s["status"].as_str().unwrap_or("UNKNOWN").to_string();
-        let num_tasks   = s["numTasks"].as_u64().unwrap_or(0) as u32;
+    let mut stages: Vec<GanttStage> = arr
+        .iter()
+        .filter_map(|s| {
+            let stage_id = s["stageId"].as_u64()?;
+            let status = s["status"].as_str().unwrap_or("UNKNOWN").to_string();
+            let num_tasks = s["numTasks"].as_u64().unwrap_or(0) as u32;
 
-        // Spark REST uses ISO-8601 strings OR plain integer milliseconds.
-        // Try both: as_str() for string timestamps, as_i64() for numeric ones.
-        let start_ms = parse_spark_time_value(&s["submissionTime"])
-            .or_else(|| parse_spark_time_value(&s["firstTaskLaunchedTime"]))
-            .unwrap_or(0);
+            // Spark REST uses ISO-8601 strings OR plain integer milliseconds.
+            // Try both: as_str() for string timestamps, as_i64() for numeric ones.
+            let start_ms = parse_spark_time_value(&s["submissionTime"])
+                .or_else(|| parse_spark_time_value(&s["firstTaskLaunchedTime"]))
+                .unwrap_or(0);
 
-        let end_ms = parse_spark_time_value(&s["completionTime"])
-            .unwrap_or(start_ms + 1);
+            let end_ms = parse_spark_time_value(&s["completionTime"]).unwrap_or(start_ms + 1);
 
-        let duration_ms = (end_ms - start_ms).max(1);
-        let name = s["name"].as_str().unwrap_or("stage").to_string();
+            let duration_ms = (end_ms - start_ms).max(1);
+            let name = s["name"].as_str().unwrap_or("stage").to_string();
 
-        Some(GanttStage { stage_id, name, start_ms, duration_ms, status, num_tasks })
-    }).collect();
+            Some(GanttStage {
+                stage_id,
+                name,
+                start_ms,
+                duration_ms,
+                status,
+                num_tasks,
+            })
+        })
+        .collect();
 
     stages.sort_by_key(|s| s.start_ms);
     stages

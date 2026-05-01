@@ -7,8 +7,8 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::HashMap;
-use tabled::Tabled;
 use std::time::Duration;
+use tabled::Tabled;
 
 #[derive(Args)]
 pub struct JobArgs {
@@ -17,6 +17,7 @@ pub struct JobArgs {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum JobAction {
     /// Submit a JAR/Python/R job to Spark via Livy
     Submit {
@@ -93,24 +94,46 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
     let auth = &profile.auth;
 
     match args.action {
-        JobAction::Submit { file, class, name, driver_memory, executor_memory,
-                            num_executors, executor_cores, conf, jars, py_files, args: app_args, wait, notify, curate } => {
+        JobAction::Submit {
+            file,
+            class,
+            name,
+            driver_memory,
+            executor_memory,
+            num_executors,
+            executor_cores,
+            conf,
+            jars,
+            py_files,
+            args: app_args,
+            wait,
+            notify,
+            curate,
+        } => {
             let mut spark_conf: HashMap<String, String> = profile.spark_conf.clone();
             for kv in &conf {
                 let parts: Vec<&str> = kv.splitn(2, '=').collect();
-                if parts.len() != 2 { anyhow::bail!("--conf must be KEY=VALUE"); }
+                if parts.len() != 2 {
+                    anyhow::bail!("--conf must be KEY=VALUE");
+                }
                 spark_conf.insert(parts[0].into(), parts[1].into());
             }
             if curate {
                 let iceberg_defaults: &[(&str, &str)] = &[
-                    ("spark.sql.extensions",
-                     "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"),
-                    ("spark.sql.catalog.demo",
-                     "org.apache.iceberg.spark.SparkCatalog"),
+                    (
+                        "spark.sql.extensions",
+                        "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+                    ),
+                    (
+                        "spark.sql.catalog.demo",
+                        "org.apache.iceberg.spark.SparkCatalog",
+                    ),
                     ("spark.sql.catalog.demo.type", "rest"),
                     ("spark.sql.catalog.demo.uri", "http://rest:8181"),
-                    ("spark.sql.catalog.demo.io-impl",
-                     "org.apache.iceberg.aws.s3.S3FileIO"),
+                    (
+                        "spark.sql.catalog.demo.io-impl",
+                        "org.apache.iceberg.aws.s3.S3FileIO",
+                    ),
                     ("spark.sql.catalog.demo.warehouse", "s3a://warehouse/"),
                     ("spark.sql.catalog.demo.s3.endpoint", "http://minio:9000"),
                     ("spark.hadoop.fs.s3a.access.key", "admin"),
@@ -120,23 +143,42 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
                 ];
                 for (k, v) in iceberg_defaults {
                     // --conf flags take precedence: only insert if not already set
-                    spark_conf.entry(k.to_string()).or_insert_with(|| v.to_string());
+                    spark_conf
+                        .entry(k.to_string())
+                        .or_insert_with(|| v.to_string());
                 }
-                println!("{} Iceberg REST catalog conf applied (demo namespace, MinIO warehouse)",
-                         "✓".cyan());
+                println!(
+                    "{} Iceberg REST catalog conf applied (demo namespace, MinIO warehouse)",
+                    "✓".cyan()
+                );
             }
 
             let req = BatchRequest {
-                file, class_name: class, name: name.clone(),
-                args: app_args, jars, py_files, files: vec![],
-                driver_memory, driver_cores: None,
-                executor_memory, executor_cores, num_executors,
-                conf: spark_conf, queue: None,
+                file,
+                class_name: class,
+                name: name.clone(),
+                args: app_args,
+                jars,
+                py_files,
+                files: vec![],
+                driver_memory,
+                driver_cores: None,
+                executor_memory,
+                executor_cores,
+                num_executors,
+                conf: spark_conf,
+                queue: None,
             };
 
             let batch = client.submit_batch(&req, auth).await?;
-            println!("{} job submitted — id: {}", "✓".green(), batch.id.to_string().cyan());
-            if let Some(n) = &name { println!("  name: {}", n); }
+            println!(
+                "{} job submitted — id: {}",
+                "✓".green(),
+                batch.id.to_string().cyan()
+            );
+            if let Some(n) = &name {
+                println!("  name: {}", n);
+            }
 
             if wait || notify {
                 watch_job(&client, batch.id, name.as_deref(), notify, auth).await?;
@@ -160,15 +202,21 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
             }
             #[derive(Tabled, Serialize)]
             struct Row {
-                #[tabled(rename = "ID")]   id: u64,
-                #[tabled(rename = "State")] state: String,
-                #[tabled(rename = "App ID")] app_id: String,
+                #[tabled(rename = "ID")]
+                id: u64,
+                #[tabled(rename = "State")]
+                state: String,
+                #[tabled(rename = "App ID")]
+                app_id: String,
             }
-            let rows: Vec<Row> = batches.iter().map(|b| Row {
-                id: b.id,
-                state: b.state.clone(),
-                app_id: b.app_id.clone().unwrap_or_default(),
-            }).collect();
+            let rows: Vec<Row> = batches
+                .iter()
+                .map(|b| Row {
+                    id: b.id,
+                    state: b.state.clone(),
+                    app_id: b.app_id.clone().unwrap_or_default(),
+                })
+                .collect();
             print_rows(&rows, fmt)?;
         }
 
@@ -186,11 +234,19 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
 // ──────────────────────────────────────────────────────────────────────────
 
-async fn watch_job(client: &LivyClient, id: u64, name: Option<&str>, notify: bool, auth: &crate::config::Auth) -> Result<()> {
+async fn watch_job(
+    client: &LivyClient,
+    id: u64,
+    name: Option<&str>,
+    notify: bool,
+    auth: &crate::config::Auth,
+) -> Result<()> {
     let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::default_spinner()
-        .template("{spinner:.cyan} [{elapsed}] {msg}")?
-        .tick_strings(&["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]));
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} [{elapsed}] {msg}")?
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
     pb.enable_steady_tick(Duration::from_millis(80));
 
     loop {
@@ -203,7 +259,11 @@ async fn watch_job(client: &LivyClient, id: u64, name: Option<&str>, notify: boo
                 println!("Final state: {}", final_state);
                 if notify {
                     let job_label = name.unwrap_or("Job");
-                    let emoji = if batch.state == "success" { "✅" } else { "❌" };
+                    let emoji = if batch.state == "success" {
+                        "✅"
+                    } else {
+                        "❌"
+                    };
                     crate::notify::send(
                         &format!("spark-ctrl — {}", job_label),
                         &format!("{} {} (id: {})", emoji, batch.state.to_uppercase(), id),
@@ -218,7 +278,12 @@ async fn watch_job(client: &LivyClient, id: u64, name: Option<&str>, notify: boo
     Ok(())
 }
 
-async fn stream_logs(client: &LivyClient, id: u64, follow: bool, auth: &crate::config::Auth) -> Result<()> {
+async fn stream_logs(
+    client: &LivyClient,
+    id: u64,
+    follow: bool,
+    auth: &crate::config::Auth,
+) -> Result<()> {
     let mut from: i64 = 0;
     loop {
         let chunk = client.get_batch_log(id, from, 100, auth).await?;
@@ -226,7 +291,9 @@ async fn stream_logs(client: &LivyClient, id: u64, follow: bool, auth: &crate::c
             println!("{}", line);
         }
         from = chunk.from + chunk.log.len() as i64;
-        if !follow || from >= chunk.total { break; }
+        if !follow || from >= chunk.total {
+            break;
+        }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     Ok(())
@@ -234,9 +301,9 @@ async fn stream_logs(client: &LivyClient, id: u64, follow: bool, auth: &crate::c
 
 fn colorize_state(state: &str) -> String {
     match state {
-        "success"   => state.green().to_string(),
+        "success" => state.green().to_string(),
         "dead" | "error" => state.red().to_string(),
-        "running"   => state.yellow().to_string(),
-        _           => state.dimmed().to_string(),
+        "running" => state.yellow().to_string(),
+        _ => state.dimmed().to_string(),
     }
 }

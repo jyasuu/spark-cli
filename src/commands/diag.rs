@@ -53,12 +53,14 @@ pub async fn run(args: DiagArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> 
     let auth = &profile.auth;
 
     match args.action {
-        DiagAction::Health               => health(&client, profile, auth, fmt).await,
+        DiagAction::Health => health(&client, profile, auth, fmt).await,
         DiagAction::Ui { app_id, print_url } => ui(profile, app_id, print_url).await,
-        DiagAction::Skew { app_id, stage_id, threshold } =>
-            skew(&client, profile, &app_id, stage_id, threshold, fmt).await,
-        DiagAction::Timeline { app_id, width } =>
-            timeline(&client, profile, &app_id, width).await,
+        DiagAction::Skew {
+            app_id,
+            stage_id,
+            threshold,
+        } => skew(&client, profile, &app_id, stage_id, threshold, fmt).await,
+        DiagAction::Timeline { app_id, width } => timeline(&client, profile, &app_id, width).await,
     }
 }
 
@@ -75,31 +77,47 @@ async fn health(
     let ok = v["ok"].as_bool().unwrap_or(false);
     let http_status = v["http_status"].as_u64().unwrap_or(0);
 
-    if ok { println!("{}", "OK".green().bold()); }
-    else  { println!("{}", "UNREACHABLE".red().bold()); }
+    if ok {
+        println!("{}", "OK".green().bold());
+    } else {
+        println!("{}", "UNREACHABLE".red().bold());
+    }
 
     let batch_count = match client.list_batches(auth).await {
-        Ok(b)  => b.len().to_string(),
+        Ok(b) => b.len().to_string(),
         Err(_) => "—".to_string(),
     };
 
-    print_kv(&[
-        ("endpoint",    profile.master_url.clone()),
-        ("backend",     profile.backend.to_string()),
-        ("http_status", http_status.to_string()),
-        ("reachable",   ok.to_string()),
-        ("active_jobs", batch_count),
-        ("thrift_url",  profile.thrift_url.clone().unwrap_or_else(|| "not configured".into())),
-    ], fmt)
+    print_kv(
+        &[
+            ("endpoint", profile.master_url.clone()),
+            ("backend", profile.backend.to_string()),
+            ("http_status", http_status.to_string()),
+            ("reachable", ok.to_string()),
+            ("active_jobs", batch_count),
+            (
+                "thrift_url",
+                profile
+                    .thrift_url
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into()),
+            ),
+        ],
+        fmt,
+    )
 }
 
 // ─── ui ───────────────────────────────────────────────────────────────────────
 
-async fn ui(profile: &crate::config::Profile, app_id: Option<String>, print_url: bool) -> Result<()> {
+async fn ui(
+    profile: &crate::config::Profile,
+    app_id: Option<String>,
+    print_url: bool,
+) -> Result<()> {
     let base = profile.master_url.trim_end_matches('/');
     let url = match &app_id {
         Some(id) => format!("{}/history/{}/jobs/", base, id),
-        None     => format!("{}/", base),
+        None => format!("{}/", base),
     };
 
     if print_url {
@@ -107,16 +125,29 @@ async fn ui(profile: &crate::config::Profile, app_id: Option<String>, print_url:
         return Ok(());
     }
 
-    println!("{} Opening Spark UI: {}", "🌐".cyan(), url.cyan().underline());
+    println!(
+        "{} Opening Spark UI: {}",
+        "🌐".cyan(),
+        url.cyan().underline()
+    );
 
     #[cfg(target_os = "macos")]
     std::process::Command::new("open").arg(&url).spawn().ok();
     #[cfg(target_os = "linux")]
-    std::process::Command::new("xdg-open").arg(&url).spawn().ok();
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .ok();
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd").args(&["/c", "start", &url]).spawn().ok();
+    std::process::Command::new("cmd")
+        .args(&["/c", "start", &url])
+        .spawn()
+        .ok();
 
-    println!("{}", "If the browser did not open, copy the URL above.".dimmed());
+    println!(
+        "{}",
+        "If the browser did not open, copy the URL above.".dimmed()
+    );
     Ok(())
 }
 
@@ -131,12 +162,20 @@ async fn skew(
     _fmt: OutputFormat,
 ) -> Result<()> {
     let path = format!("/api/v1/applications/{}/stages/{}", app_id, stage_id);
-    println!("{} Fetching stage metrics for app={} stage={}", "⟳".cyan(), app_id.cyan(), stage_id);
+    println!(
+        "{} Fetching stage metrics for app={} stage={}",
+        "⟳".cyan(),
+        app_id.cyan(),
+        stage_id
+    );
 
     let stages = match client.spark_api_get(&path, &profile.auth).await {
         Err(e) => {
             println!("{} Could not reach Spark REST API: {}", "⚠".yellow(), e);
-            println!("{}", "Ensure the History Server or Spark Master UI is reachable at master_url.".dimmed());
+            println!(
+                "{}",
+                "Ensure the History Server or Spark Master UI is reachable at master_url.".dimmed()
+            );
             return Ok(());
         }
         Ok(v) => v,
@@ -148,19 +187,31 @@ async fn skew(
         vec![stages]
     };
 
-    println!("{} Skew analysis — App: {} Stage: {}", "📊".cyan(), app_id.cyan(), stage_id);
-    println!("{}", format!("  Threshold ratio: {:.1}×", threshold).dimmed());
+    println!(
+        "{} Skew analysis — App: {} Stage: {}",
+        "📊".cyan(),
+        app_id.cyan(),
+        stage_id
+    );
+    println!(
+        "{}",
+        format!("  Threshold ratio: {:.1}×", threshold).dimmed()
+    );
 
     for stage in &arr {
         let tasks = match stage.get("tasks").and_then(|t| t.as_object()) {
             Some(t) => t,
             None => {
-                println!("{}", "  Task metrics not yet available (stage may not have started).".dimmed());
+                println!(
+                    "{}",
+                    "  Task metrics not yet available (stage may not have started).".dimmed()
+                );
                 continue;
             }
         };
 
-        let mut durations: Vec<f64> = tasks.values()
+        let mut durations: Vec<f64> = tasks
+            .values()
             .filter_map(|t| t["taskMetrics"]["executorRunTime"].as_f64())
             .collect();
 
@@ -172,11 +223,11 @@ async fn skew(
         durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let n = durations.len();
         let median = durations[n / 2];
-        let max    = durations[n - 1];
-        let p25    = durations[n / 4];
-        let p75    = durations[(n * 3) / 4];
+        let max = durations[n - 1];
+        let p25 = durations[n / 4];
+        let p75 = durations[(n * 3) / 4];
         let mean: f64 = durations.iter().sum::<f64>() / n as f64;
-        let ratio  = if median > 0.0 { max / median } else { 0.0 };
+        let ratio = if median > 0.0 { max / median } else { 0.0 };
 
         println!("  Task count       : {}", n);
         println!("  Min              : {:.1} ms", durations[0]);
@@ -188,15 +239,36 @@ async fn skew(
         println!("  Skew ratio       : {:.2}×  (max / median)", ratio);
 
         if ratio >= threshold {
-            println!("\n  {} {} SKEW DETECTED (ratio {:.1}× ≥ threshold {:.1}×)",
-                "⚠".red(), "WARNING:".red().bold(), ratio, threshold);
+            println!(
+                "\n  {} {} SKEW DETECTED (ratio {:.1}× ≥ threshold {:.1}×)",
+                "⚠".red(),
+                "WARNING:".red().bold(),
+                ratio,
+                threshold
+            );
             println!("  {}", "Recommended actions:".yellow().bold());
-            println!("  {}", "  • Salt join keys if skew comes from a join".yellow());
-            println!("  {}", "  • Use repartition() or coalesce() before the heavy stage".yellow());
-            println!("  {}", "  • Filter or pre-aggregate the skewed partition".yellow());
-            println!("  {}", "  • Enable AQE: spark.sql.adaptive.enabled=true".yellow());
+            println!(
+                "  {}",
+                "  • Salt join keys if skew comes from a join".yellow()
+            );
+            println!(
+                "  {}",
+                "  • Use repartition() or coalesce() before the heavy stage".yellow()
+            );
+            println!(
+                "  {}",
+                "  • Filter or pre-aggregate the skewed partition".yellow()
+            );
+            println!(
+                "  {}",
+                "  • Enable AQE: spark.sql.adaptive.enabled=true".yellow()
+            );
         } else {
-            println!("\n  {} Task distribution looks healthy (ratio {:.2}×).", "✓".green(), ratio);
+            println!(
+                "\n  {} Task distribution looks healthy (ratio {:.2}×).",
+                "✓".green(),
+                ratio
+            );
         }
     }
     Ok(())
@@ -211,12 +283,19 @@ async fn timeline(
     width: usize,
 ) -> Result<()> {
     let path = format!("/api/v1/applications/{}/stages", app_id);
-    println!("{} Fetching stage list for app={}", "⟳".cyan(), app_id.cyan());
+    println!(
+        "{} Fetching stage list for app={}",
+        "⟳".cyan(),
+        app_id.cyan()
+    );
 
     let data = match client.spark_api_get(&path, &profile.auth).await {
         Err(e) => {
             println!("{} Could not reach Spark REST API: {}", "⚠".yellow(), e);
-            println!("{}", "Ensure History Server is reachable at master_url.".dimmed());
+            println!(
+                "{}",
+                "Ensure History Server is reachable at master_url.".dimmed()
+            );
             return Ok(());
         }
         Ok(v) => v,
@@ -225,23 +304,42 @@ async fn timeline(
     let stages = crate::gantt::stages_from_json(&data);
     if stages.is_empty() {
         // No real data — show a demo so the user can see the format
-        println!("{}", "(no stage data from API — showing demo chart)".yellow());
+        println!(
+            "{}",
+            "(no stage data from API — showing demo chart)".yellow()
+        );
         let demo = vec![
             crate::gantt::GanttStage {
-                stage_id: 0, name: "parallelize at script.py:5".into(),
-                start_ms: 0, duration_ms: 1_200, status: "COMPLETE".into(), num_tasks: 4,
+                stage_id: 0,
+                name: "parallelize at script.py:5".into(),
+                start_ms: 0,
+                duration_ms: 1_200,
+                status: "COMPLETE".into(),
+                num_tasks: 4,
             },
             crate::gantt::GanttStage {
-                stage_id: 1, name: "map at script.py:12".into(),
-                start_ms: 1_100, duration_ms: 3_400, status: "COMPLETE".into(), num_tasks: 16,
+                stage_id: 1,
+                name: "map at script.py:12".into(),
+                start_ms: 1_100,
+                duration_ms: 3_400,
+                status: "COMPLETE".into(),
+                num_tasks: 16,
             },
             crate::gantt::GanttStage {
-                stage_id: 2, name: "reduceByKey at script.py:18".into(),
-                start_ms: 4_300, duration_ms: 8_700, status: "ACTIVE".into(), num_tasks: 32,
+                stage_id: 2,
+                name: "reduceByKey at script.py:18".into(),
+                start_ms: 4_300,
+                duration_ms: 8_700,
+                status: "ACTIVE".into(),
+                num_tasks: 32,
             },
             crate::gantt::GanttStage {
-                stage_id: 3, name: "saveAsTextFile at script.py:22".into(),
-                start_ms: 12_900, duration_ms: 2_100, status: "PENDING".into(), num_tasks: 8,
+                stage_id: 3,
+                name: "saveAsTextFile at script.py:22".into(),
+                start_ms: 12_900,
+                duration_ms: 2_100,
+                status: "PENDING".into(),
+                num_tasks: 8,
             },
         ];
         crate::gantt::render(&demo, width);

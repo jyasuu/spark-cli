@@ -15,24 +15,24 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileStatus {
-    pub path_suffix:      String,
-    pub r#type:           String,   // FILE | DIRECTORY
-    pub length:           u64,
-    pub owner:            String,
-    pub modification_time: u64,    // ms since epoch
-    pub permission:       String,
-    pub replication:      u32,
-    pub block_size:       u64,
+    pub path_suffix: String,
+    pub r#type: String, // FILE | DIRECTORY
+    pub length: u64,
+    pub owner: String,
+    pub modification_time: u64, // ms since epoch
+    pub permission: String,
+    pub replication: u32,
+    pub block_size: u64,
 }
 
 impl FileStatus {
     /// Human-readable size string (B / KB / MB / GB).
     pub fn size_human(&self) -> String {
         match self.length {
-            n if n < 1_024             => format!("{} B",   n),
-            n if n < 1_048_576         => format!("{:.1} KB", n as f64 / 1_024.0),
-            n if n < 1_073_741_824     => format!("{:.1} MB", n as f64 / 1_048_576.0),
-            n                          => format!("{:.2} GB", n as f64 / 1_073_741_824.0),
+            n if n < 1_024 => format!("{} B", n),
+            n if n < 1_048_576 => format!("{:.1} KB", n as f64 / 1_024.0),
+            n if n < 1_073_741_824 => format!("{:.1} MB", n as f64 / 1_048_576.0),
+            n => format!("{:.2} GB", n as f64 / 1_073_741_824.0),
         }
     }
 
@@ -45,7 +45,11 @@ impl FileStatus {
     }
 
     pub fn type_symbol(&self) -> &'static str {
-        if self.r#type == "DIRECTORY" { "d" } else { "-" }
+        if self.r#type == "DIRECTORY" {
+            "d"
+        } else {
+            "-"
+        }
     }
 }
 
@@ -58,11 +62,17 @@ pub struct WebHdfsClient {
 
 impl WebHdfsClient {
     pub fn new(base_url: &str) -> Self {
-        Self { base_url: base_url.trim_end_matches('/').to_string() }
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+        }
     }
 
     fn webhdfs_url(&self, path: &str, op: &str, extra: &str) -> String {
-        let path = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
         format!("{}/webhdfs/v1{}?op={}{}", self.base_url, path, op, extra)
     }
 
@@ -70,8 +80,8 @@ impl WebHdfsClient {
         match auth.method.as_deref() {
             Some("basic") => {
                 if let (Some(u), Some(p)) = (&auth.username, &auth.token) {
-                    let encoded = base64::engine::general_purpose::STANDARD
-                        .encode(format!("{}:{}", u, p));
+                    let encoded =
+                        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", u, p));
                     return req.with_header("Authorization", format!("Basic {}", encoded));
                 }
                 req
@@ -117,7 +127,12 @@ impl WebHdfsClient {
             bail!("path not found: {}", path);
         }
         if resp.status_code >= 400 {
-            bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+            bail!(
+                "HTTP {} from {}: {}",
+                resp.status_code,
+                url,
+                resp.as_str().unwrap_or("")
+            );
         }
 
         #[derive(Deserialize)]
@@ -143,10 +158,17 @@ impl WebHdfsClient {
         let req = Self::apply_auth(minreq::delete(&url).with_timeout(30), auth);
         let resp = req.send().with_context(|| format!("DELETE {}", url))?;
         if resp.status_code >= 400 {
-            bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+            bail!(
+                "HTTP {} from {}: {}",
+                resp.status_code,
+                url,
+                resp.as_str().unwrap_or("")
+            );
         }
         #[derive(Deserialize)]
-        struct BoolResp { boolean: bool }
+        struct BoolResp {
+            boolean: bool,
+        }
         let r: BoolResp = resp.json().context("parsing DELETE response")?;
         Ok(r.boolean)
     }
@@ -155,16 +177,20 @@ impl WebHdfsClient {
 
     pub fn mkdir(&self, path: &str, auth: &Auth) -> Result<bool> {
         let url = self.webhdfs_url(path, "MKDIRS", &self.user_param(auth));
-        let req = Self::apply_auth(
-            minreq::put(&url).with_timeout(30).with_body(vec![]),
-            auth,
-        );
+        let req = Self::apply_auth(minreq::put(&url).with_timeout(30).with_body(vec![]), auth);
         let resp = req.send().with_context(|| format!("PUT {}", url))?;
         if resp.status_code >= 400 {
-            bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+            bail!(
+                "HTTP {} from {}: {}",
+                resp.status_code,
+                url,
+                resp.as_str().unwrap_or("")
+            );
         }
         #[derive(Deserialize)]
-        struct BoolResp { boolean: bool }
+        struct BoolResp {
+            boolean: bool,
+        }
         let r: BoolResp = resp.json().context("parsing MKDIRS response")?;
         Ok(r.boolean)
     }
@@ -178,9 +204,7 @@ impl WebHdfsClient {
     pub fn read(&self, path: &str, auth: &Auth) -> Result<Vec<u8>> {
         let url = self.webhdfs_url(path, "OPEN", &self.user_param(auth));
         let req = Self::apply_auth(
-            minreq::get(&url)
-                .with_timeout(300)
-                .with_max_redirects(5),
+            minreq::get(&url).with_timeout(300).with_max_redirects(5),
             auth,
         );
         let resp = req.send().with_context(|| format!("GET (OPEN) {}", url))?;
@@ -188,7 +212,12 @@ impl WebHdfsClient {
             bail!("path not found: {}", path);
         }
         if resp.status_code >= 400 {
-            bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+            bail!(
+                "HTTP {} from {}: {}",
+                resp.status_code,
+                url,
+                resp.as_str().unwrap_or("")
+            );
         }
         // minreq Response body access: as_bytes() returns &[u8]
         Ok(resp.as_bytes().to_vec())
@@ -223,12 +252,15 @@ impl WebHdfsClient {
             auth,
         );
 
-        let r1 = step1_req.send().with_context(|| format!("PUT (CREATE step 1) {}", url))?;
+        let r1 = step1_req
+            .send()
+            .with_context(|| format!("PUT (CREATE step 1) {}", url))?;
 
         match r1.status_code {
             // ── Redirect path (real WebHDFS namenode) ─────────────────────────
             307 => {
-                let datanode_url = r1.headers
+                let datanode_url = r1
+                    .headers
                     .get("location")
                     .or_else(|| r1.headers.get("Location"))
                     .cloned()
@@ -241,13 +273,18 @@ impl WebHdfsClient {
                         .with_body(data.to_vec()),
                     auth,
                 );
-                let r2 = step2_req.send()
+                let r2 = step2_req
+                    .send()
                     .with_context(|| format!("PUT (CREATE step 2) {}", datanode_url))?;
 
                 if r2.status_code == 201 || r2.status_code == 200 {
                     Ok(true)
                 } else {
-                    bail!("HTTP {} from datanode: {}", r2.status_code, r2.as_str().unwrap_or(""));
+                    bail!(
+                        "HTTP {} from datanode: {}",
+                        r2.status_code,
+                        r2.as_str().unwrap_or("")
+                    );
                 }
             }
 
@@ -271,14 +308,19 @@ impl WebHdfsClient {
                         .with_body(data.to_vec()),
                     auth,
                 );
-                let r2 = step2_req.send()
+                let r2 = step2_req
+                    .send()
                     .with_context(|| format!("PUT (CREATE data upload) {}", url))?;
                 Ok(r2.status_code == 200 || r2.status_code == 201)
             }
 
             // ── Error ─────────────────────────────────────────────────────────
             code if code >= 400 => {
-                bail!("HTTP {} from WebHDFS CREATE: {}", code, r1.as_str().unwrap_or(""));
+                bail!(
+                    "HTTP {} from WebHDFS CREATE: {}",
+                    code,
+                    r1.as_str().unwrap_or("")
+                );
             }
             code => {
                 bail!("Unexpected HTTP {} from WebHDFS CREATE at {}", code, url);
@@ -296,11 +338,18 @@ impl WebHdfsClient {
             bail!("path not found: {}", path);
         }
         if resp.status_code >= 400 {
-            bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+            bail!(
+                "HTTP {} from {}: {}",
+                resp.status_code,
+                url,
+                resp.as_str().unwrap_or("")
+            );
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct StatResp { file_status: FileStatus }
+        struct StatResp {
+            file_status: FileStatus,
+        }
         let r: StatResp = resp.json().context("parsing GETFILESTATUS response")?;
         Ok(r.file_status)
     }

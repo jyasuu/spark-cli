@@ -48,15 +48,18 @@ fn save_history(history: &[String]) {
 }
 
 fn append_sql_history(sql: &str) {
-    let Some(path) = dirs::data_local_dir()
-        .map(|d| d.join("spark-ctrl").join("sql_history.log")) else { return };
+    let Some(path) = dirs::data_local_dir().map(|d| d.join("spark-ctrl").join("sql_history.log"))
+    else {
+        return;
+    };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
     let line = format!("[{}] {}\n", ts, sql.replace('\n', " "));
     let _ = std::fs::OpenOptions::new()
-        .create(true).append(true)
+        .create(true)
+        .append(true)
         .open(&path)
         .and_then(|mut f| f.write_all(line.as_bytes()));
 }
@@ -68,18 +71,30 @@ fn handle_dot(cmd: &str, history: &[String], session_id: u64) -> DotResult {
     match parts[0] {
         ".quit" | ".exit" | ".q" => DotResult::Quit,
         ".help" | ".h" => {
-            println!("{}", "─── dot commands ────────────────────────────────".dimmed());
+            println!(
+                "{}",
+                "─── dot commands ────────────────────────────────".dimmed()
+            );
             println!("  {}   show this help", ".help".cyan());
             println!("  {}   exit the REPL", ".quit".cyan());
             println!("  {}  show recent SQL history (last 20)", ".history".cyan());
             println!("  {}  clear the screen", ".clear".cyan());
             println!("  {} show current Livy session id", ".session".cyan());
-            println!("{}", "─────────────────────────────────────────────────".dimmed());
-            println!("{}", "Terminate SQL with ';'  |  Ctrl-C = cancel  |  Ctrl-D = quit".dimmed());
+            println!(
+                "{}",
+                "─────────────────────────────────────────────────".dimmed()
+            );
+            println!(
+                "{}",
+                "Terminate SQL with ';'  |  Ctrl-C = cancel  |  Ctrl-D = quit".dimmed()
+            );
             DotResult::Continue
         }
         ".history" => {
-            let n = parts.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(20);
+            let n = parts
+                .get(1)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(20);
             let start = history.len().saturating_sub(n);
             for (i, entry) in history[start..].iter().enumerate() {
                 println!("{:>4}  {}", (start + i + 1).to_string().dimmed(), entry);
@@ -96,8 +111,12 @@ fn handle_dot(cmd: &str, history: &[String], session_id: u64) -> DotResult {
             DotResult::Continue
         }
         other => {
-            println!("{} unknown command '{}' — type {} for help",
-                "✗".red(), other, ".help".cyan());
+            println!(
+                "{} unknown command '{}' — type {} for help",
+                "✗".red(),
+                other,
+                ".help".cyan()
+            );
             DotResult::Continue
         }
     }
@@ -118,7 +137,8 @@ pub async fn run(profile: &Profile, auth: &Auth, kind: &str) -> Result<()> {
 
     let session_id = open_session(&client, kind, auth).await?;
 
-    println!("{} Session {}  |  type {} for help  |  terminate SQL with {}",
+    println!(
+        "{} Session {}  |  type {} for help  |  terminate SQL with {}",
         "✓".green(),
         session_id.to_string().cyan(),
         ".help".yellow(),
@@ -127,7 +147,7 @@ pub async fn run(profile: &Profile, auth: &Auth, kind: &str) -> Result<()> {
     println!();
 
     let mut history: Vec<String> = load_history();
-    let mut buffer = String::new();   // multi-line SQL accumulator
+    let mut buffer = String::new(); // multi-line SQL accumulator
     let stdin = io::stdin();
 
     loop {
@@ -205,10 +225,12 @@ pub async fn run(profile: &Profile, auth: &Auth, kind: &str) -> Result<()> {
                 Ok(result) => {
                     let elapsed = t0.elapsed();
                     if result.status != "ok" {
-                        eprintln!("{} {}: {}",
+                        eprintln!(
+                            "{} {}: {}",
                             "error".red().bold(),
                             result.ename.as_deref().unwrap_or(""),
-                            result.evalue.as_deref().unwrap_or("unknown"));
+                            result.evalue.as_deref().unwrap_or("unknown")
+                        );
                     } else if let Some(data) = &result.data {
                         if let Some(text) = data.get("text/plain") {
                             println!("{}", text.as_str().unwrap_or(&text.to_string()));

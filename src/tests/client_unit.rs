@@ -1,5 +1,5 @@
-use crate::testing::MockLivy;
 use crate::client::LivyClient;
+use crate::testing::MockLivy;
 
 fn no_auth() -> crate::config::Auth {
     crate::config::Auth::default()
@@ -70,8 +70,10 @@ async fn stream_logs_first_line_contains_sparkcontext() {
     let auth = no_auth();
 
     let chunk = client.get_batch_log(42, 0, 100, &auth).await.unwrap();
-    assert!(chunk.log[0].contains("SparkContext"),
-            "first log line should mention SparkContext");
+    assert!(
+        chunk.log[0].contains("SparkContext"),
+        "first log line should mention SparkContext"
+    );
 }
 
 // ── config — Backend FromStr / Display roundtrip ──────────────────────────────
@@ -82,9 +84,9 @@ fn backend_display_and_from_str_are_inverses() {
     use std::str::FromStr;
 
     for (s, variant) in [
-        ("livy",       Backend::Livy),
+        ("livy", Backend::Livy),
         ("kubernetes", Backend::Kubernetes),
-        ("yarn",       Backend::Yarn),
+        ("yarn", Backend::Yarn),
         ("standalone", Backend::Standalone),
     ] {
         // Display → string
@@ -105,7 +107,7 @@ fn backend_display_and_from_str_are_inverses() {
 
 #[test]
 fn config_add_profile_sets_active_when_first() {
-    use crate::config::{Backend, Config, Profile, Auth};
+    use crate::config::{Auth, Backend, Config, Profile};
     use std::collections::HashMap;
 
     let mut cfg = Config::default();
@@ -140,7 +142,10 @@ fn config_set_active_profile_errors_for_unknown_profile() {
     let result = cfg.set_active_profile("nonexistent");
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("nonexistent"), "error should name the missing profile");
+    assert!(
+        msg.contains("nonexistent"),
+        "error should name the missing profile"
+    );
 }
 
 #[test]
@@ -151,7 +156,10 @@ fn config_active_profile_errors_when_none_set() {
     let result = cfg.active_profile();
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("no active profile"), "error should be informative");
+    assert!(
+        msg.contains("no active profile"),
+        "error should be informative"
+    );
 }
 
 #[test]
@@ -175,9 +183,10 @@ fn config_toml_round_trip_preserves_all_fields() {
     spark_conf.insert("spark.executor.memory".to_string(), "4g".to_string());
 
     let mut aliases = HashMap::new();
-    aliases.insert("curate".to_string(), vec![
-        "spark.sql.shuffle.partitions=200".to_string(),
-    ]);
+    aliases.insert(
+        "curate".to_string(),
+        vec!["spark.sql.shuffle.partitions=200".to_string()],
+    );
 
     let profile = Profile {
         backend: Backend::Kubernetes,
@@ -203,8 +212,10 @@ fn config_toml_round_trip_preserves_all_fields() {
     let toml_str = toml::to_string_pretty(&cfg).expect("serialization failed");
 
     // Must contain key fields
-    assert!(toml_str.contains("k8s-prod-cluster") || toml_str.contains("k8s-livy"),
-            "TOML should contain master_url");
+    assert!(
+        toml_str.contains("k8s-prod-cluster") || toml_str.contains("k8s-livy"),
+        "TOML should contain master_url"
+    );
     assert!(toml_str.contains("kubernetes"));
     assert!(toml_str.contains("bearer"));
 
@@ -216,7 +227,12 @@ fn config_toml_round_trip_preserves_all_fields() {
     assert_eq!(p.thrift_url.as_deref(), Some("jdbc:hive2://thrift:10000"));
     assert_eq!(p.namespace.as_deref(), Some("data-platform"));
     assert_eq!(p.auth.method.as_deref(), Some("bearer"));
-    assert_eq!(p.spark_conf.get("spark.executor.memory").map(String::as_str), Some("4g"));
+    assert_eq!(
+        p.spark_conf
+            .get("spark.executor.memory")
+            .map(String::as_str),
+        Some("4g")
+    );
     assert_eq!(p.aliases.get("curate").map(|v| v.len()), Some(1));
 }
 
@@ -230,15 +246,29 @@ fn output_print_rows_csv_escapes_commas_and_quotes() {
 
     #[derive(Tabled, Serialize)]
     struct Row {
-        #[tabled(rename = "name")]  name:  String,
-        #[tabled(rename = "value")] value: String,
+        #[tabled(rename = "name")]
+        name: String,
+        #[tabled(rename = "value")]
+        value: String,
     }
 
     let rows = vec![
-        Row { name: "plain".to_string(),        value: "simple".to_string() },
-        Row { name: "with,comma".to_string(),    value: "42".to_string() },
-        Row { name: "with\"quote".to_string(),   value: "yes".to_string() },
-        Row { name: "multi\nline".to_string(),    value: "no".to_string() },
+        Row {
+            name: "plain".to_string(),
+            value: "simple".to_string(),
+        },
+        Row {
+            name: "with,comma".to_string(),
+            value: "42".to_string(),
+        },
+        Row {
+            name: "with\"quote".to_string(),
+            value: "yes".to_string(),
+        },
+        Row {
+            name: "multi\nline".to_string(),
+            value: "no".to_string(),
+        },
     ];
 
     // print_rows to Csv should not panic on any of these
@@ -255,7 +285,8 @@ fn output_print_rows_empty_slice_does_not_panic() {
 
     #[derive(Tabled, Serialize)]
     struct Row {
-        #[tabled(rename = "x")] x: String,
+        #[tabled(rename = "x")]
+        x: String,
     }
 
     let empty: &[Row] = &[];
@@ -269,9 +300,9 @@ fn output_print_kv_formats_all_three_output_modes() {
     use crate::output::{print_kv, OutputFormat};
 
     let pairs = &[
-        ("endpoint",    "http://livy:8998".to_string()),
+        ("endpoint", "http://livy:8998".to_string()),
         ("http_status", "200".to_string()),
-        ("reachable",   "true".to_string()),
+        ("reachable", "true".to_string()),
     ];
 
     print_kv(pairs, OutputFormat::Table).unwrap();
@@ -326,7 +357,7 @@ fn diag_ui_url_construction_with_app_id() {
         let base = master_url.trim_end_matches('/');
         match app_id {
             Some(id) => format!("{}/history/{}/jobs/", base, id),
-            None     => format!("{}/", base),
+            None => format!("{}/", base),
         }
     }
 
@@ -334,10 +365,7 @@ fn diag_ui_url_construction_with_app_id() {
         make_url("http://spark:8080", Some("application_1234_0001")),
         "http://spark:8080/history/application_1234_0001/jobs/"
     );
-    assert_eq!(
-        make_url("http://spark:8080/", None),
-        "http://spark:8080/"
-    );
+    assert_eq!(make_url("http://spark:8080/", None), "http://spark:8080/");
     // Trailing slash on master_url must not produce double slash
     assert_eq!(
         make_url("http://spark:8080/", Some("application_9999_0001")),
