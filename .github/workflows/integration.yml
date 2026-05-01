@@ -98,10 +98,14 @@ jobs:
       - name: Upload PySpark curation scripts to MinIO
         # Required by curate_submit_reaches_success_state which submits
         # gold_daily_revenue.py as s3a://warehouse/scripts/gold_daily_revenue.py
+        # Note: scripts/ is mounted into spark-iceberg, not mc, so we copy
+        # from the host runner into the mc container first, then upload.
         run: |
-          docker exec mc mc cp /home/iceberg/scripts/gold_daily_revenue.py \
+          docker cp scripts/gold_daily_revenue.py mc:/tmp/gold_daily_revenue.py
+          docker cp scripts/silver_orders.py mc:/tmp/silver_orders.py
+          docker exec mc mc cp /tmp/gold_daily_revenue.py \
             minio/warehouse/scripts/gold_daily_revenue.py
-          docker exec mc mc cp /home/iceberg/scripts/silver_orders.py \
+          docker exec mc mc cp /tmp/silver_orders.py \
             minio/warehouse/scripts/silver_orders.py
           echo "Scripts uploaded to MinIO"
 
