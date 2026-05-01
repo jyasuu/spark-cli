@@ -10,3 +10,6 @@ pub mod iceberg_snapshots;
 
 #[cfg(feature = "integration")]
 pub mod spark_curation;
+
+#[cfg(feature = "integration")]
+pub mod write_modes;
