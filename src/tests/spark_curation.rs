@@ -8,16 +8,7 @@
 //!   • Compaction:  CALL rewrite_data_files() reduces physical file count
 
 use crate::client::LivyClient;
-use crate::commands::session::{extract_text, one_shot_sql};
-use crate::testing::IntegEnv;
-
-async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
-    let auth = env.profile().auth;
-    one_shot_sql(client, query, &auth)
-        .await
-        .and_then(|r| extract_text(&r))
-        .unwrap_or_else(|e| format!("ERROR: {e}"))
-}
+use crate::testing::{IntegEnv, run_sql as sql, parse_count};
 
 // ── Test 1: build silver layer from raw orders ────────────────────────────────
 
@@ -33,8 +24,7 @@ async fn silver_orders_view_has_same_count_as_raw() {
 
     // Raw row count
     let raw_count_text = sql(&client, &env, "SELECT COUNT(*) FROM demo.orders").await;
-    let raw_count: u64 = raw_count_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let raw_count: u64 = parse_count(&raw_count_text);
 
     // Create a temporary silver view — clean + non-null status
     sql(&client, &env,
@@ -48,8 +38,7 @@ async fn silver_orders_view_has_same_count_as_raw() {
     let silver_count_text = sql(&client, &env,
         "SELECT COUNT(*) FROM orders_silver"
     ).await;
-    let silver_count: u64 = silver_count_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let silver_count: u64 = parse_count(&silver_count_text);
 
     // All seed orders have a non-null status, so counts must match
     assert!(
@@ -108,8 +97,7 @@ async fn merge_into_gold_table_is_idempotent() {
     let count_after_first = sql(&client, &env,
         "SELECT COUNT(*) FROM demo.daily_revenue"
     ).await;
-    let n1: u64 = count_after_first.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let n1: u64 = parse_count(&count_after_first);
 
     // Second identical MERGE — must not duplicate rows
     sql(&client, &env,
@@ -124,8 +112,7 @@ async fn merge_into_gold_table_is_idempotent() {
     let count_after_second = sql(&client, &env,
         "SELECT COUNT(*) FROM demo.daily_revenue"
     ).await;
-    let n2: u64 = count_after_second.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let n2: u64 = parse_count(&count_after_second);
 
     assert!(n1 > 0, "gold table must have rows after first MERGE");
     assert_eq!(n1, n2, "MERGE INTO must be idempotent (first={n1}, second={n2})");
@@ -153,8 +140,7 @@ async fn merge_into_creates_new_snapshot_each_time() {
     let snap_before = sql(&client, &env,
         "SELECT COUNT(*) FROM demo.daily_revenue.snapshots"
     ).await;
-    let n_before: u64 = snap_before.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let n_before: u64 = parse_count(&snap_before);
 
     // Run a write to create a new snapshot
     sql(&client, &env,
@@ -165,8 +151,7 @@ async fn merge_into_creates_new_snapshot_each_time() {
     let snap_after = sql(&client, &env,
         "SELECT COUNT(*) FROM demo.daily_revenue.snapshots"
     ).await;
-    let n_after: u64 = snap_after.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let n_after: u64 = parse_count(&snap_after);
 
     assert!(
         n_after > n_before,
@@ -207,8 +192,7 @@ async fn compaction_reduces_file_count() {
     let files_before_text = sql(&client, &env,
         "SELECT COUNT(*) FROM demo.compaction_test.files"
     ).await;
-    let files_before: u64 = files_before_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let files_before: u64 = parse_count(&files_before_text);
 
     // Run the compaction procedure (mirrors the HTML guide's rewrite_data_files call)
     sql(&client, &env,
@@ -222,8 +206,7 @@ async fn compaction_reduces_file_count() {
     let files_after_text = sql(&client, &env,
         "SELECT COUNT(*) FROM demo.compaction_test.files"
     ).await;
-    let files_after: u64 = files_after_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let files_after: u64 = parse_count(&files_after_text);
 
     assert!(
         files_before >= 5,
