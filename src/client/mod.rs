@@ -148,7 +148,20 @@ impl LivyClient {
 
     pub async fn create_session(&self, kind: &str, auth: &Auth) -> Result<SessionInfo> {
         let url = format!("{}/sessions", self.base_url);
-        let body = serde_json::json!({ "kind": kind });
+        let conf = serde_json::json!({
+            "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+            "spark.sql.catalog.demo": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.demo.type": "rest",
+            "spark.sql.catalog.demo.uri": "http://rest:8181",
+            "spark.sql.catalog.demo.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
+            "spark.sql.catalog.demo.warehouse": "s3a://warehouse/",
+            "spark.sql.catalog.demo.s3.endpoint": "http://minio:9000",
+            "spark.hadoop.fs.s3a.endpoint": "http://minio:9000",
+            "spark.hadoop.fs.s3a.access.key": "admin",
+            "spark.hadoop.fs.s3a.secret.key": "password",
+            "spark.hadoop.fs.s3a.path.style.access": "true"
+        });
+        let body = serde_json::json!({ "kind": kind, "conf": conf });
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || post_json(&url, &body, &auth)).await?
     }
@@ -236,6 +249,7 @@ impl LivyClient {
 // ─── data types ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchRequest {
     pub file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
