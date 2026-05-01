@@ -27,55 +27,14 @@
 //! dependencies between Phase 2 and Phase 3 runs.
 
 use crate::client::LivyClient;
-use crate::commands::session::{extract_text, one_shot_sql};
-use crate::testing::IntegEnv;
+use crate::testing::{IntegEnv, run_sql as sql, parse_count};
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// ── helpers re-exported from testing::helpers ─────────────────────────────────
+// `sql()` and `parse_count()` come from crate::testing::helpers.
 
-/// Run SQL via a one-shot Livy session and return the text/plain payload.
-/// On error the raw "ERROR: …" string is returned so assertions can fail
-/// with a meaningful message rather than panicking inside the helper.
-async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
-    let auth = env.profile().auth;
-    one_shot_sql(client, query, &auth)
-        .await
-        .and_then(|r| extract_text(&r))
-        .unwrap_or_else(|e| format!("ERROR: {e}"))
-}
-
-/// Parse the first numeric token from a Livy text/plain response.
-/// Livy returns a header row followed by data rows; this skips the header and
-/// finds the first line that parses cleanly as a u64.
-fn parse_count(text: &str) -> u64 {
-    text.lines()
-        .filter_map(|l| l.trim().parse::<u64>().ok())
-        .next()
-        .unwrap_or(0)
-}
-
-/// Return the most-recent snapshot's `operation` column value for a table.
-/// Iceberg records: "append" | "overwrite" | "delete" | "replace".
+/// Return the most-recent snapshot `operation` column value for a table.
 async fn latest_operation(client: &LivyClient, env: &IntegEnv, table: &str) -> String {
-    let text = sql(
-        client,
-        env,
-        &format!(
-            "SELECT operation FROM {table}.snapshots \
-             ORDER BY committed_at DESC LIMIT 1"
-        ),
-    )
-    .await;
-    // Skip any header line; grab first non-empty data token
-    text.lines()
-        .filter(|l| {
-            let t = l.trim().to_lowercase();
-            // skip header rows (contain the word "operation") and empty lines
-            !t.is_empty() && t != "operation"
-        })
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    crate::testing::latest_snapshot_op(client, env, table).await
 }
 
 // ── p3s1: append mode ─────────────────────────────────────────────────────────
