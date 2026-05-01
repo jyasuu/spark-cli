@@ -1,20 +1,25 @@
+
 FROM tabulario/spark-iceberg
 
-# ── Apache Livy 0.8.0-incubating ─────────────────────────────────────────────
+# ── Apache Livy 0.9.0-incubating (Spark 3.x / Scala 2.12) ───────────────────
 # tabulario/spark-iceberg does not include Livy.  We install it here.
 # The base image has no ENTRYPOINT — it uses CMD ["/bin/start-spark.sh"].
 # We replace CMD with our wrapper which starts Livy, then exec's the original.
+#
+# Download URL: https://www.apache.org/dyn/closer.lua redirects to a mirror.
+# We use the direct archive URL for reliability in Docker builds.
+# Filename format changed in 0.8.0: now includes Scala version (_2.12).
 
-ENV LIVY_VERSION=0.8.0-incubating
+ENV LIVY_VERSION=0.9.0-incubating
+ENV LIVY_SCALA_VERSION=2.12
 ENV LIVY_HOME=/opt/livy
 ENV SPARK_HOME=/opt/spark
 
-# Install Livy binary release
 RUN curl -fsSL \
-    "https://archive.apache.org/dist/incubator/livy/${LIVY_VERSION}/apache-livy-${LIVY_VERSION}-bin.zip" \
+    "https://archive.apache.org/dist/incubator/livy/${LIVY_VERSION}/apache-livy-${LIVY_VERSION}_${LIVY_SCALA_VERSION}-bin.zip" \
     -o /tmp/livy.zip \
   && unzip /tmp/livy.zip -d /opt \
-  && mv /opt/apache-livy-${LIVY_VERSION}-bin ${LIVY_HOME} \
+  && mv /opt/apache-livy-${LIVY_VERSION}_${LIVY_SCALA_VERSION}-bin ${LIVY_HOME} \
   && rm /tmp/livy.zip
 
 # ── Livy configuration ────────────────────────────────────────────────────────
@@ -35,6 +40,5 @@ RUN chmod +x /usr/local/bin/start-with-livy.sh
 
 EXPOSE 8998
 
-# Override CMD (not ENTRYPOINT) to match the base image's convention.
-# The base image has no ENTRYPOINT, so CMD is the full command that runs.
+# Override CMD (not ENTRYPOINT) — the base image uses CMD with no ENTRYPOINT.
 CMD ["/usr/local/bin/start-with-livy.sh"]
