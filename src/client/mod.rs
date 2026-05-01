@@ -13,12 +13,22 @@ fn get_json<T: for<'de> Deserialize<'de>>(url: &str, auth: &Auth) -> Result<T> {
     req = apply_auth(req, auth);
     let resp = req.send().with_context(|| format!("GET {}", url))?;
     if resp.status_code >= 400 {
-        bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+        bail!(
+            "HTTP {} from {}: {}",
+            resp.status_code,
+            url,
+            resp.as_str().unwrap_or("")
+        );
     }
-    resp.json::<T>().with_context(|| format!("parsing response from {}", url))
+    resp.json::<T>()
+        .with_context(|| format!("parsing response from {}", url))
 }
 
-fn post_json<B: Serialize, T: for<'de> Deserialize<'de>>(url: &str, body: &B, auth: &Auth) -> Result<T> {
+fn post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
+    url: &str,
+    body: &B,
+    auth: &Auth,
+) -> Result<T> {
     let json_body = serde_json::to_vec(body)?;
     let mut req = minreq::post(url)
         .with_header("Content-Type", "application/json")
@@ -27,9 +37,15 @@ fn post_json<B: Serialize, T: for<'de> Deserialize<'de>>(url: &str, body: &B, au
     req = apply_auth(req, auth);
     let resp = req.send().with_context(|| format!("POST {}", url))?;
     if resp.status_code >= 400 {
-        bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+        bail!(
+            "HTTP {} from {}: {}",
+            resp.status_code,
+            url,
+            resp.as_str().unwrap_or("")
+        );
     }
-    resp.json::<T>().with_context(|| format!("parsing response from {}", url))
+    resp.json::<T>()
+        .with_context(|| format!("parsing response from {}", url))
 }
 
 fn delete(url: &str, auth: &Auth) -> Result<()> {
@@ -48,8 +64,8 @@ fn apply_auth(req: minreq::Request, auth: &Auth) -> minreq::Request {
             if let (Some(u), Some(p)) = (&auth.username, &auth.token) {
                 use base64::Engine;
                 // minreq has no built-in basic auth helper; encode manually
-                let encoded = base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", u, p));
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", u, p));
                 return req.with_header("Authorization", format!("Basic {}", encoded));
             }
             req
@@ -97,10 +113,14 @@ impl LivyClient {
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<BatchInfo>> {
             #[derive(Deserialize)]
-            struct ListResp { batches: Option<Vec<BatchInfo>>, sessions: Option<Vec<BatchInfo>> }
+            struct ListResp {
+                batches: Option<Vec<BatchInfo>>,
+                sessions: Option<Vec<BatchInfo>>,
+            }
             let r: ListResp = get_json(&url, &auth)?;
             Ok(r.batches.or(r.sessions).unwrap_or_default())
-        }).await?
+        })
+        .await?
     }
 
     pub async fn delete_batch(&self, id: u64, auth: &Auth) -> Result<()> {
@@ -109,8 +129,17 @@ impl LivyClient {
         tokio::task::spawn_blocking(move || delete(&url, &auth)).await?
     }
 
-    pub async fn get_batch_log(&self, id: u64, from: i64, size: usize, auth: &Auth) -> Result<LogChunk> {
-        let url = format!("{}/batches/{}/log?from={}&size={}", self.base_url, id, from, size);
+    pub async fn get_batch_log(
+        &self,
+        id: u64,
+        from: i64,
+        size: usize,
+        auth: &Auth,
+    ) -> Result<LogChunk> {
+        let url = format!(
+            "{}/batches/{}/log?from={}&size={}",
+            self.base_url, id, from, size
+        );
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || get_json(&url, &auth)).await?
     }
@@ -130,20 +159,30 @@ impl LivyClient {
         tokio::task::spawn_blocking(move || get_json(&url, &auth)).await?
     }
 
-    pub async fn run_statement(&self, session_id: u64, code: &str, auth: &Auth) -> Result<StatementResult> {
+    pub async fn run_statement(
+        &self,
+        session_id: u64,
+        code: &str,
+        auth: &Auth,
+    ) -> Result<StatementResult> {
         // Submit
         let url = format!("{}/sessions/{}/statements", self.base_url, session_id);
         let body = serde_json::json!({ "code": code });
         let auth_c = auth.clone();
-        let stmt: Statement = tokio::task::spawn_blocking(move || post_json(&url, &body, &auth_c)).await??;
+        let stmt: Statement =
+            tokio::task::spawn_blocking(move || post_json(&url, &body, &auth_c)).await??;
         let stmt_id = stmt.id;
 
         // Poll until complete
         loop {
             tokio::time::sleep(Duration::from_millis(600)).await;
-            let url = format!("{}/sessions/{}/statements/{}", self.base_url, session_id, stmt_id);
+            let url = format!(
+                "{}/sessions/{}/statements/{}",
+                self.base_url, session_id, stmt_id
+            );
             let auth_c = auth.clone();
-            let s: Statement = tokio::task::spawn_blocking(move || get_json(&url, &auth_c)).await??;
+            let s: Statement =
+                tokio::task::spawn_blocking(move || get_json(&url, &auth_c)).await??;
             match s.state.as_str() {
                 "available" | "error" | "cancelled" => {
                     return Ok(s.output.unwrap_or(StatementResult {
@@ -174,10 +213,15 @@ impl LivyClient {
             let mut req = minreq::get(&url).with_timeout(10);
             req = apply_auth(req, &auth);
             match req.send() {
-                Ok(r)  => Ok(serde_json::json!({ "http_status": r.status_code, "ok": r.status_code < 400 })),
-                Err(e) => Ok(serde_json::json!({ "http_status": 0, "ok": false, "error": e.to_string() })),
+                Ok(r) => Ok(
+                    serde_json::json!({ "http_status": r.status_code, "ok": r.status_code < 400 }),
+                ),
+                Err(e) => {
+                    Ok(serde_json::json!({ "http_status": 0, "ok": false, "error": e.to_string() }))
+                }
             }
-        }).await?
+        })
+        .await?
     }
 
     // ── generic spark REST (for skew detection) ───────────────────────────────

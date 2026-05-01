@@ -13,18 +13,11 @@
 //!  4. A second sync (simulated by a MERGE INTO) creates an additional snapshot.
 
 use crate::client::LivyClient;
-use crate::commands::session::{one_shot_sql, extract_text};
-use crate::testing::IntegEnv;
+use crate::commands::session::one_shot_sql;
+use crate::testing::{run_sql as sql, IntegEnv};
 
-// ── helper: run SQL against the live Spark Thrift session ─────────────────────
-
-async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
-    let auth = env.profile().auth;
-    let result = one_shot_sql(client, query, &auth)
-        .await
-        .expect("SQL execution failed");
-    extract_text(&result).expect("could not extract text from result")
-}
+// ── helper ────────────────────────────────────────────────────────────────────
+// `sql()` is re-exported from testing::helpers — no local copy needed.
 
 // ── Test 1: catalog is reachable and demo namespace is visible ────────────────
 
@@ -32,9 +25,15 @@ async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
 async fn iceberg_catalog_lists_demo_namespace() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
     let out = sql(&client, &env, "SHOW DATABASES").await;
@@ -51,9 +50,15 @@ async fn iceberg_catalog_lists_demo_namespace() {
 async fn products_table_has_at_least_one_snapshot() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
 
@@ -79,9 +84,15 @@ async fn products_table_has_at_least_one_snapshot() {
 async fn orders_table_has_at_least_one_snapshot() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
     let out = sql(
@@ -103,9 +114,15 @@ async fn orders_table_has_at_least_one_snapshot() {
 async fn snapshot_count_increases_after_second_write() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
     let auth = env.profile().auth;
@@ -153,9 +170,15 @@ async fn snapshot_count_increases_after_second_write() {
 async fn fs_table_snapshots_sql_branch_returns_rows() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
 
@@ -169,10 +192,7 @@ async fn fs_table_snapshots_sql_branch_returns_rows() {
     let out = sql(&client, &env, &sql_str).await;
 
     // Should have at least one data row (not just headers / empty string)
-    let data_lines: Vec<&str> = out
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    let data_lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
 
     assert!(
         !data_lines.is_empty(),

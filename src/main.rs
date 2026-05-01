@@ -1,9 +1,9 @@
+mod client;
 mod commands;
 mod config;
-mod client;
-mod output;
-mod notify;
 mod gantt;
+mod notify;
+mod output;
 mod webhdfs;
 
 // Test utilities — compiled only when running `cargo test` (or with the
@@ -24,7 +24,7 @@ use colored::Colorize;
     name = "spark-ctrl",
     about = "Spark Control Plane CLI — orchestrate and manage Apache Spark clusters",
     version,
-    propagate_version = true,
+    propagate_version = true
 )]
 struct Cli {
     /// Override the active profile
@@ -79,9 +79,9 @@ async fn run() -> Result<()> {
     let fmt = cli.format;
     match cli.command {
         Commands::Profile(args) => commands::profile::run(args, &mut cfg).await,
-        Commands::Job(args)     => commands::job::run(args, &cfg, fmt).await,
-        Commands::Sql(args)     => commands::sql::run(args, &cfg, fmt).await,
-        Commands::Fs(args)      => commands::fs::run(args, &cfg, fmt).await,
-        Commands::Diag(args)    => commands::diag::run(args, &cfg, fmt).await,
+        Commands::Job(args) => commands::job::run(args, &cfg, fmt).await,
+        Commands::Sql(args) => commands::sql::run(args, &cfg, fmt).await,
+        Commands::Fs(args) => commands::fs::run(args, &cfg, fmt).await,
+        Commands::Diag(args) => commands::diag::run(args, &cfg, fmt).await,
     }
 }

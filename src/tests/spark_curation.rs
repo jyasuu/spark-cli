@@ -8,16 +8,7 @@
 //!   • Compaction:  CALL rewrite_data_files() reduces physical file count
 
 use crate::client::LivyClient;
-use crate::commands::session::{extract_text, one_shot_sql};
-use crate::testing::IntegEnv;
-
-async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
-    let auth = env.profile().auth;
-    one_shot_sql(client, query, &auth)
-        .await
-        .and_then(|r| extract_text(&r))
-        .unwrap_or_else(|e| format!("ERROR: {e}"))
-}
+use crate::testing::{parse_count, run_sql as sql, IntegEnv};
 
 // ── Test 1: build silver layer from raw orders ────────────────────────────────
 
@@ -25,37 +16,39 @@ async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
 async fn silver_orders_view_has_same_count_as_raw() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
 
     // Raw row count
     let raw_count_text = sql(&client, &env, "SELECT COUNT(*) FROM demo.orders").await;
-    let raw_count: u64 = raw_count_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let raw_count: u64 = parse_count(&raw_count_text);
 
     // Create a temporary silver view — clean + non-null status
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "CREATE OR REPLACE TEMP VIEW orders_silver AS \
          SELECT id, user_id, status, total_amount, \
                 TO_DATE(created_at) AS order_date \
          FROM demo.orders \
-         WHERE status IS NOT NULL"
-    ).await;
+         WHERE status IS NOT NULL",
+    )
+    .await;
 
-    let silver_count_text = sql(&client, &env,
-        "SELECT COUNT(*) FROM orders_silver"
-    ).await;
-    let silver_count: u64 = silver_count_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let silver_count_text = sql(&client, &env, "SELECT COUNT(*) FROM orders_silver").await;
+    let silver_count: u64 = parse_count(&silver_count_text);
 
     // All seed orders have a non-null status, so counts must match
-    assert!(
-        silver_count > 0,
-        "silver view returned 0 rows"
-    );
+    assert!(silver_count > 0, "silver view returned 0 rows");
     assert_eq!(
         silver_count, raw_count,
         "silver row count ({silver_count}) should equal raw ({raw_count}) \
@@ -69,66 +62,81 @@ async fn silver_orders_view_has_same_count_as_raw() {
 async fn merge_into_gold_table_is_idempotent() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
 
     // Create the gold table (idempotent DDL)
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "CREATE TABLE IF NOT EXISTS demo.daily_revenue ( \
              order_date DATE, \
              order_count BIGINT, \
              revenue DOUBLE \
-         ) USING iceberg PARTITIONED BY (order_date)"
-    ).await;
+         ) USING iceberg PARTITIONED BY (order_date)",
+    )
+    .await;
 
     // Source aggregation view
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "CREATE OR REPLACE TEMP VIEW new_daily AS \
          SELECT TO_DATE(created_at) AS order_date, \
                 COUNT(*) AS order_count, \
                 COALESCE(SUM(total_amount), 0.0) AS revenue \
          FROM demo.orders \
          WHERE status = 'shipped' \
-         GROUP BY TO_DATE(created_at)"
-    ).await;
+         GROUP BY TO_DATE(created_at)",
+    )
+    .await;
 
     // First MERGE
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "MERGE INTO demo.daily_revenue t \
          USING new_daily s \
          ON t.order_date = s.order_date \
          WHEN MATCHED THEN UPDATE SET \
              t.order_count = s.order_count, t.revenue = s.revenue \
-         WHEN NOT MATCHED THEN INSERT *"
-    ).await;
+         WHEN NOT MATCHED THEN INSERT *",
+    )
+    .await;
 
-    let count_after_first = sql(&client, &env,
-        "SELECT COUNT(*) FROM demo.daily_revenue"
-    ).await;
-    let n1: u64 = count_after_first.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let count_after_first = sql(&client, &env, "SELECT COUNT(*) FROM demo.daily_revenue").await;
+    let n1: u64 = parse_count(&count_after_first);
 
     // Second identical MERGE — must not duplicate rows
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "MERGE INTO demo.daily_revenue t \
          USING new_daily s \
          ON t.order_date = s.order_date \
          WHEN MATCHED THEN UPDATE SET \
              t.order_count = s.order_count, t.revenue = s.revenue \
-         WHEN NOT MATCHED THEN INSERT *"
-    ).await;
+         WHEN NOT MATCHED THEN INSERT *",
+    )
+    .await;
 
-    let count_after_second = sql(&client, &env,
-        "SELECT COUNT(*) FROM demo.daily_revenue"
-    ).await;
-    let n2: u64 = count_after_second.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let count_after_second = sql(&client, &env, "SELECT COUNT(*) FROM demo.daily_revenue").await;
+    let n2: u64 = parse_count(&count_after_second);
 
     assert!(n1 > 0, "gold table must have rows after first MERGE");
-    assert_eq!(n1, n2, "MERGE INTO must be idempotent (first={n1}, second={n2})");
+    assert_eq!(
+        n1, n2,
+        "MERGE INTO must be idempotent (first={n1}, second={n2})"
+    );
 }
 
 // ── Test 3: second MERGE creates a new Iceberg snapshot ──────────────────────
@@ -137,36 +145,52 @@ async fn merge_into_gold_table_is_idempotent() {
 async fn merge_into_creates_new_snapshot_each_time() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
 
     // Ensure table exists (may have been created by the previous test)
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "CREATE TABLE IF NOT EXISTS demo.daily_revenue ( \
              order_date DATE, order_count BIGINT, revenue DOUBLE \
-         ) USING iceberg PARTITIONED BY (order_date)"
-    ).await;
+         ) USING iceberg PARTITIONED BY (order_date)",
+    )
+    .await;
 
-    let snap_before = sql(&client, &env,
-        "SELECT COUNT(*) FROM demo.daily_revenue.snapshots"
-    ).await;
-    let n_before: u64 = snap_before.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let snap_before = sql(
+        &client,
+        &env,
+        "SELECT COUNT(*) FROM demo.daily_revenue.snapshots",
+    )
+    .await;
+    let n_before: u64 = parse_count(&snap_before);
 
     // Run a write to create a new snapshot
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "INSERT INTO demo.daily_revenue \
-         VALUES (CURRENT_DATE(), 1, 99.99)"
-    ).await;
+         VALUES (CURRENT_DATE(), 1, 99.99)",
+    )
+    .await;
 
-    let snap_after = sql(&client, &env,
-        "SELECT COUNT(*) FROM demo.daily_revenue.snapshots"
-    ).await;
-    let n_after: u64 = snap_after.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let snap_after = sql(
+        &client,
+        &env,
+        "SELECT COUNT(*) FROM demo.daily_revenue.snapshots",
+    )
+    .await;
+    let n_after: u64 = parse_count(&snap_after);
 
     assert!(
         n_after > n_before,
@@ -183,47 +207,66 @@ async fn merge_into_creates_new_snapshot_each_time() {
 async fn compaction_reduces_file_count() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     let client = env.livy_client().unwrap();
 
     // Create a fresh table for this test
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "CREATE TABLE IF NOT EXISTS demo.compaction_test ( \
              id BIGINT, value STRING \
-         ) USING iceberg"
-    ).await;
+         ) USING iceberg",
+    )
+    .await;
 
     // Write 5 small batches — each INSERT creates its own data file
     for i in 0..5u64 {
-        sql(&client, &env,
-            &format!("INSERT INTO demo.compaction_test VALUES ({i}, 'batch-{i}')")
-        ).await;
+        sql(
+            &client,
+            &env,
+            &format!("INSERT INTO demo.compaction_test VALUES ({i}, 'batch-{i}')"),
+        )
+        .await;
     }
 
     // Count files before compaction
-    let files_before_text = sql(&client, &env,
-        "SELECT COUNT(*) FROM demo.compaction_test.files"
-    ).await;
-    let files_before: u64 = files_before_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let files_before_text = sql(
+        &client,
+        &env,
+        "SELECT COUNT(*) FROM demo.compaction_test.files",
+    )
+    .await;
+    let files_before: u64 = parse_count(&files_before_text);
 
     // Run the compaction procedure (mirrors the HTML guide's rewrite_data_files call)
-    sql(&client, &env,
+    sql(
+        &client,
+        &env,
         "CALL demo.system.rewrite_data_files( \
              table => 'demo.compaction_test', \
              options => map('target-file-size-bytes', '134217728') \
-         )"
-    ).await;
+         )",
+    )
+    .await;
 
     // Count files after compaction
-    let files_after_text = sql(&client, &env,
-        "SELECT COUNT(*) FROM demo.compaction_test.files"
-    ).await;
-    let files_after: u64 = files_after_text.lines()
-        .filter_map(|l| l.trim().parse().ok()).next().unwrap_or(0);
+    let files_after_text = sql(
+        &client,
+        &env,
+        "SELECT COUNT(*) FROM demo.compaction_test.files",
+    )
+    .await;
+    let files_after: u64 = parse_count(&files_after_text);
 
     assert!(
         files_before >= 5,
@@ -248,9 +291,15 @@ async fn compaction_reduces_file_count() {
 async fn curate_submit_reaches_success_state() {
     let env = match IntegEnv::from_env() {
         Some(e) => e,
-        None => { eprintln!("skip: SPARK_CTRL_INTEGRATION not set"); return; }
+        None => {
+            eprintln!("skip: SPARK_CTRL_INTEGRATION not set");
+            return;
+        }
     };
-    if let Err(msg) = env.check_livy().await { eprintln!("skip: {msg}"); return; }
+    if let Err(msg) = env.check_livy().await {
+        eprintln!("skip: {msg}");
+        return;
+    }
 
     use crate::client::BatchRequest;
     use std::collections::HashMap;
@@ -262,18 +311,25 @@ async fn curate_submit_reaches_success_state() {
     // Build the same conf that --curate injects
     let mut conf: HashMap<String, String> = HashMap::new();
     let iceberg_defaults: &[(&str, &str)] = &[
-        ("spark.sql.extensions",
-         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"),
-        ("spark.sql.catalog.demo",      "org.apache.iceberg.spark.SparkCatalog"),
+        (
+            "spark.sql.extensions",
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        ),
+        (
+            "spark.sql.catalog.demo",
+            "org.apache.iceberg.spark.SparkCatalog",
+        ),
         ("spark.sql.catalog.demo.type", "rest"),
-        ("spark.sql.catalog.demo.uri",  "http://rest:8181"),
-        ("spark.sql.catalog.demo.io-impl",
-         "org.apache.iceberg.aws.s3.S3FileIO"),
-        ("spark.sql.catalog.demo.warehouse",   "s3a://warehouse/"),
+        ("spark.sql.catalog.demo.uri", "http://rest:8181"),
+        (
+            "spark.sql.catalog.demo.io-impl",
+            "org.apache.iceberg.aws.s3.S3FileIO",
+        ),
+        ("spark.sql.catalog.demo.warehouse", "s3a://warehouse/"),
         ("spark.sql.catalog.demo.s3.endpoint", "http://minio:9000"),
-        ("spark.hadoop.fs.s3a.access.key",        "admin"),
-        ("spark.hadoop.fs.s3a.secret.key",        "password"),
-        ("spark.hadoop.fs.s3a.endpoint",           "http://minio:9000"),
+        ("spark.hadoop.fs.s3a.access.key", "admin"),
+        ("spark.hadoop.fs.s3a.secret.key", "password"),
+        ("spark.hadoop.fs.s3a.endpoint", "http://minio:9000"),
         ("spark.hadoop.fs.s3a.path.style.access", "true"),
     ];
     for (k, v) in iceberg_defaults {
@@ -301,7 +357,9 @@ async fn curate_submit_reaches_success_state() {
         queue: None,
     };
 
-    let batch = client.submit_batch(&req, &auth).await
+    let batch = client
+        .submit_batch(&req, &auth)
+        .await
         .expect("batch submit failed");
     eprintln!("submitted batch id={}", batch.id);
 
@@ -312,7 +370,9 @@ async fn curate_submit_reaches_success_state() {
             panic!("job {} did not finish within 5 minutes", batch.id);
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let info = client.get_batch(batch.id, &auth).await
+        let info = client
+            .get_batch(batch.id, &auth)
+            .await
             .expect("get_batch failed");
         eprintln!("  state={}", info.state);
         match info.state.as_str() {
@@ -334,9 +394,12 @@ async fn curate_submit_reaches_success_state() {
         &client_sql,
         "SELECT COUNT(*) FROM demo.daily_revenue",
         &auth,
-    ).await.expect("count query failed");
+    )
+    .await
+    .expect("count query failed");
     let text = crate::commands::session::extract_text(&out).unwrap_or_default();
-    let count: u64 = text.lines()
+    let count: u64 = text
+        .lines()
         .filter_map(|l| l.trim().parse().ok())
         .next()
         .unwrap_or(0);

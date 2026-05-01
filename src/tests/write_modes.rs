@@ -27,55 +27,14 @@
 //! dependencies between Phase 2 and Phase 3 runs.
 
 use crate::client::LivyClient;
-use crate::commands::session::{extract_text, one_shot_sql};
-use crate::testing::IntegEnv;
+use crate::testing::{parse_count, run_sql as sql, IntegEnv};
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// ── helpers re-exported from testing::helpers ─────────────────────────────────
+// `sql()` and `parse_count()` come from crate::testing::helpers.
 
-/// Run SQL via a one-shot Livy session and return the text/plain payload.
-/// On error the raw "ERROR: …" string is returned so assertions can fail
-/// with a meaningful message rather than panicking inside the helper.
-async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
-    let auth = env.profile().auth;
-    one_shot_sql(client, query, &auth)
-        .await
-        .and_then(|r| extract_text(&r))
-        .unwrap_or_else(|e| format!("ERROR: {e}"))
-}
-
-/// Parse the first numeric token from a Livy text/plain response.
-/// Livy returns a header row followed by data rows; this skips the header and
-/// finds the first line that parses cleanly as a u64.
-fn parse_count(text: &str) -> u64 {
-    text.lines()
-        .filter_map(|l| l.trim().parse::<u64>().ok())
-        .next()
-        .unwrap_or(0)
-}
-
-/// Return the most-recent snapshot's `operation` column value for a table.
-/// Iceberg records: "append" | "overwrite" | "delete" | "replace".
+/// Return the most-recent snapshot `operation` column value for a table.
 async fn latest_operation(client: &LivyClient, env: &IntegEnv, table: &str) -> String {
-    let text = sql(
-        client,
-        env,
-        &format!(
-            "SELECT operation FROM {table}.snapshots \
-             ORDER BY committed_at DESC LIMIT 1"
-        ),
-    )
-    .await;
-    // Skip any header line; grab first non-empty data token
-    text.lines()
-        .filter(|l| {
-            let t = l.trim().to_lowercase();
-            // skip header rows (contain the word "operation") and empty lines
-            !t.is_empty() && t != "operation"
-        })
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    crate::testing::latest_snapshot_op(client, env, table).await
 }
 
 // ── p3s1: append mode ─────────────────────────────────────────────────────────
@@ -116,16 +75,22 @@ async fn append_mode_row_and_snapshot_counts_increase_correctly() {
     .await;
 
     // Baseline counts
-    let rows_before = parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
+    let rows_before =
+        parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
     let snaps_before = parse_count(
-        &sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}.snapshots")).await,
+        &sql(
+            &client,
+            &env,
+            &format!("SELECT COUNT(*) FROM {table}.snapshots"),
+        )
+        .await,
     );
 
     // Append 3 rows in 3 separate INSERTs — each must produce its own snapshot
     let batch: &[(&str, &str, u64)] = &[
-        ("evt-001", "click",    1),
+        ("evt-001", "click", 1),
         ("evt-002", "purchase", 2),
-        ("evt-003", "refund",   3),
+        ("evt-003", "refund", 3),
     ];
     for (i, (id, label, value)) in batch.iter().enumerate() {
         sql(
@@ -136,9 +101,15 @@ async fn append_mode_row_and_snapshot_counts_increase_correctly() {
         .await;
     }
 
-    let rows_after = parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
+    let rows_after =
+        parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
     let snaps_after = parse_count(
-        &sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}.snapshots")).await,
+        &sql(
+            &client,
+            &env,
+            &format!("SELECT COUNT(*) FROM {table}.snapshots"),
+        )
+        .await,
     );
 
     assert_eq!(
@@ -209,8 +180,12 @@ async fn upsert_mode_merge_into_is_idempotent_and_updates_values() {
     )
     .await;
 
-    let rows_seeded = parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
-    assert_eq!(rows_seeded, 2, "seed INSERT OVERWRITE should produce exactly 2 rows");
+    let rows_seeded =
+        parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
+    assert_eq!(
+        rows_seeded, 2,
+        "seed INSERT OVERWRITE should produce exactly 2 rows"
+    );
 
     // Source: update entity 1's status, add entity 3
     let merge = format!(
@@ -227,11 +202,13 @@ async fn upsert_mode_merge_into_is_idempotent_and_updates_values() {
 
     // First merge
     sql(&client, &env, &merge).await;
-    let count_first = parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
+    let count_first =
+        parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
 
     // Second identical merge — idempotency check
     sql(&client, &env, &merge).await;
-    let count_second = parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
+    let count_second =
+        parse_count(&sql(&client, &env, &format!("SELECT COUNT(*) FROM {table}")).await);
 
     assert_eq!(
         count_first, 3,
@@ -399,7 +376,12 @@ async fn cdc_merge_applies_updates_and_deletes_correctly() {
 
     // entity 20 must be deleted
     let banana_count = parse_count(
-        &sql(&client, &env, &format!("SELECT COUNT(*) FROM {target} WHERE entity_id = 20")).await,
+        &sql(
+            &client,
+            &env,
+            &format!("SELECT COUNT(*) FROM {target} WHERE entity_id = 20"),
+        )
+        .await,
     );
     assert_eq!(
         banana_count, 0,
@@ -408,7 +390,12 @@ async fn cdc_merge_applies_updates_and_deletes_correctly() {
 
     // entity 30 must be untouched
     let cherry_count = parse_count(
-        &sql(&client, &env, &format!("SELECT COUNT(*) FROM {target} WHERE entity_id = 30")).await,
+        &sql(
+            &client,
+            &env,
+            &format!("SELECT COUNT(*) FROM {target} WHERE entity_id = 30"),
+        )
+        .await,
     );
     assert_eq!(
         cherry_count, 1,
@@ -417,7 +404,12 @@ async fn cdc_merge_applies_updates_and_deletes_correctly() {
 
     // entity 40 must be inserted
     let durian_count = parse_count(
-        &sql(&client, &env, &format!("SELECT COUNT(*) FROM {target} WHERE entity_id = 40")).await,
+        &sql(
+            &client,
+            &env,
+            &format!("SELECT COUNT(*) FROM {target} WHERE entity_id = 40"),
+        )
+        .await,
     );
     assert_eq!(
         durian_count, 1,
@@ -516,12 +508,7 @@ async fn snapshot_operation_column_reflects_write_type() {
     );
 
     // ── 4. DELETE FROM → "delete" ─────────────────────────────────────────────
-    sql(
-        &client,
-        &env,
-        &format!("DELETE FROM {table} WHERE id = 1"),
-    )
-    .await;
+    sql(&client, &env, &format!("DELETE FROM {table} WHERE id = 1")).await;
 
     let op_delete = latest_operation(&client, &env, table).await;
     assert_eq!(

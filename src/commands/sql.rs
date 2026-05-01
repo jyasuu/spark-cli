@@ -3,9 +3,9 @@ use crate::commands::session::{extract_text, one_shot_sql, open_session};
 use crate::config::Config;
 use crate::output::OutputFormat;
 use anyhow::Result;
+use chrono::Local;
 use clap::{Args, Subcommand};
 use colored::Colorize;
-use chrono::Local;
 
 #[derive(Args)]
 pub struct SqlArgs {
@@ -95,18 +95,22 @@ pub async fn run(args: SqlArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
         SqlAction::Inspect { target } => {
             let sql_str = match &target {
-                InspectTarget::Databases           => "SHOW DATABASES".to_string(),
+                InspectTarget::Databases => "SHOW DATABASES".to_string(),
                 InspectTarget::Tables { database } => format!("SHOW TABLES IN {}", database),
-                InspectTarget::Schema { table, database } =>
-                    format!("DESCRIBE {}.{}", database, table),
-                InspectTarget::Partitions { table } =>
-                    format!("SHOW PARTITIONS {}", table),
+                InspectTarget::Schema { table, database } => {
+                    format!("DESCRIBE {}.{}", database, table)
+                }
+                InspectTarget::Partitions { table } => format!("SHOW PARTITIONS {}", table),
             };
             let result = one_shot_sql(&client, &sql_str, auth).await?;
             print_statement_result(&result, fmt)?;
         }
 
-        SqlAction::Export { sql, output, fmt: out_fmt } => {
+        SqlAction::Export {
+            sql,
+            output,
+            fmt: out_fmt,
+        } => {
             append_history(&sql);
             let result = one_shot_sql(&client, &sql, auth).await?;
 
@@ -115,19 +119,24 @@ pub async fn run(args: SqlArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
                 "json" => {
                     // Try to pretty-print if the text payload is JSON; otherwise wrap it
                     match serde_json::from_str::<serde_json::Value>(&text) {
-                        Ok(v)  => serde_json::to_string_pretty(&v)?,
+                        Ok(v) => serde_json::to_string_pretty(&v)?,
                         Err(_) => text,
                     }
                 }
-                _ => text,   // csv / plain text passthrough
+                _ => text, // csv / plain text passthrough
             };
             std::fs::write(&output, &content)?;
-            println!("{} exported {} bytes to '{}'", "✓".green(), content.len(), output.cyan());
+            println!(
+                "{} exported {} bytes to '{}'",
+                "✓".green(),
+                content.len(),
+                output.cyan()
+            );
         }
 
         SqlAction::History { limit } => {
-            let log_path = dirs::data_local_dir()
-                .map(|d| d.join("spark-ctrl").join("sql_history.log"));
+            let log_path =
+                dirs::data_local_dir().map(|d| d.join("spark-ctrl").join("sql_history.log"));
             match log_path {
                 None => anyhow::bail!("cannot determine data directory"),
                 Some(path) if !path.exists() => {
@@ -158,22 +167,36 @@ pub async fn run(args: SqlArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 /// `~/.local/share/spark-ctrl/sql_history.log`.
 /// Failures are silently ignored so a missing directory never breaks queries.
 fn append_history(sql: &str) {
-    let Ok(data_dir) = dirs::data_local_dir().ok_or(()) else { return };
+    let Ok(data_dir) = dirs::data_local_dir().ok_or(()) else {
+        return;
+    };
     let dir = data_dir.join("spark-ctrl");
-    if std::fs::create_dir_all(&dir).is_err() { return; }
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
     let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
     let line = format!("[{}] {}\n", ts, sql.replace('\n', " "));
     let _ = std::fs::OpenOptions::new()
-        .create(true).append(true)
+        .create(true)
+        .append(true)
         .open(dir.join("sql_history.log"))
-        .and_then(|mut f| { use std::io::Write; f.write_all(line.as_bytes()) });
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(line.as_bytes())
+        });
 }
 
-fn print_statement_result(result: &crate::client::StatementResult, _fmt: OutputFormat) -> Result<()> {
+fn print_statement_result(
+    result: &crate::client::StatementResult,
+    _fmt: OutputFormat,
+) -> Result<()> {
     if result.status != "ok" {
-        eprintln!("{} {}: {}", "error".red().bold(),
+        eprintln!(
+            "{} {}: {}",
+            "error".red().bold(),
             result.ename.as_deref().unwrap_or(""),
-            result.evalue.as_deref().unwrap_or("unknown"));
+            result.evalue.as_deref().unwrap_or("unknown")
+        );
         return Ok(());
     }
 

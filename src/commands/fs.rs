@@ -3,7 +3,7 @@ use crate::commands::session::{extract_text, one_shot_sql};
 use crate::config::Config;
 use crate::output::{print_rows, OutputFormat};
 use crate::webhdfs::WebHdfsClient;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde::Serialize;
@@ -86,7 +86,11 @@ pub async fn run(args: FsArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
     match args.action {
         FsAction::Ls { path, all, long } => ls(cfg, profile, &path, all, long, fmt).await,
-        FsAction::Cp { src, dst, overwrite } => cp(cfg, profile, &src, &dst, overwrite).await,
+        FsAction::Cp {
+            src,
+            dst,
+            overwrite,
+        } => cp(cfg, profile, &src, &dst, overwrite).await,
         FsAction::Rm { path, recursive } => rm(cfg, profile, &path, recursive).await,
         FsAction::Mkdir { path } => mkdir(cfg, profile, &path).await,
         FsAction::Table { action } => table_op(cfg, profile, action, fmt).await,
@@ -99,18 +103,31 @@ pub async fn run(args: FsArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 // implementation would call HDFS HttpFS, S3 API, or WebHDFS directly.
 // ──────────────────────────────────────────────────────────────────────────
 
-async fn ls(_cfg: &Config, profile: &crate::config::Profile, path: &str, all: bool, long: bool, fmt: OutputFormat) -> Result<()> {
+async fn ls(
+    _cfg: &Config,
+    profile: &crate::config::Profile,
+    path: &str,
+    all: bool,
+    long: bool,
+    fmt: OutputFormat,
+) -> Result<()> {
     // Detect WebHDFS vs S3/ADLS path and pick strategy
     let hdfs_base = hdfs_base_url(profile, path);
 
     #[derive(Tabled, Serialize)]
     struct FileRow {
-        #[tabled(rename = "Type")]     type_sym: String,
-        #[tabled(rename = "Name")]     name: String,
-        #[tabled(rename = "Size")]     size: String,
-        #[tabled(rename = "Modified")] modified: String,
-        #[tabled(rename = "Owner")]    owner: String,
-        #[tabled(rename = "Perms")]    perms: String,
+        #[tabled(rename = "Type")]
+        type_sym: String,
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "Size")]
+        size: String,
+        #[tabled(rename = "Modified")]
+        modified: String,
+        #[tabled(rename = "Owner")]
+        owner: String,
+        #[tabled(rename = "Perms")]
+        perms: String,
     }
 
     if let Some(base_url) = hdfs_base {
@@ -119,24 +136,37 @@ async fn ls(_cfg: &Config, profile: &crate::config::Profile, path: &str, all: bo
         let auth = profile.auth.clone();
         let result = tokio::task::spawn_blocking(move || {
             WebHdfsClient::new(&base_url).ls(&path_owned, &auth)
-        }).await?;
+        })
+        .await?;
 
         match result {
             Err(e) => {
                 println!("{} WebHDFS error: {}", "⚠".yellow(), e);
-                println!("{}", "Check that the namenode is reachable and WebHDFS is enabled.".dimmed());
+                println!(
+                    "{}",
+                    "Check that the namenode is reachable and WebHDFS is enabled.".dimmed()
+                );
                 return Ok(());
             }
             Ok(entries) => {
-                let rows: Vec<FileRow> = entries.iter()
+                let rows: Vec<FileRow> = entries
+                    .iter()
                     .filter(|e| all || !e.path_suffix.starts_with('.'))
                     .map(|e| FileRow {
                         type_sym: e.type_symbol().into(),
-                        name:     e.path_suffix.clone(),
-                        size:     if e.r#type == "DIRECTORY" { "-".into() } else { e.size_human() },
+                        name: e.path_suffix.clone(),
+                        size: if e.r#type == "DIRECTORY" {
+                            "-".into()
+                        } else {
+                            e.size_human()
+                        },
                         modified: e.modified(),
-                        owner:    e.owner.clone(),
-                        perms:    if long { format!("{} r={}", e.permission, e.replication) } else { e.permission.clone() },
+                        owner: e.owner.clone(),
+                        perms: if long {
+                            format!("{} r={}", e.permission, e.replication)
+                        } else {
+                            e.permission.clone()
+                        },
                     })
                     .collect();
 
@@ -150,15 +180,35 @@ async fn ls(_cfg: &Config, profile: &crate::config::Profile, path: &str, all: bo
     } else {
         // Non-HDFS path: show informative stub
         println!("{} {}", "ls".cyan().bold(), path);
-        println!("{}", "Path appears to be S3/ADLS/local — WebHDFS client only supports hdfs:// paths.".yellow());
-        println!("{}", "For S3: configure AWS CLI and use 'aws s3 ls'. For ADLS: use 'az storage fs'.".dimmed());
+        println!(
+            "{}",
+            "Path appears to be S3/ADLS/local — WebHDFS client only supports hdfs:// paths."
+                .yellow()
+        );
+        println!(
+            "{}",
+            "For S3: configure AWS CLI and use 'aws s3 ls'. For ADLS: use 'az storage fs'."
+                .dimmed()
+        );
 
         // Demo row so the output format is still visible
         let rows = vec![
-            FileRow { type_sym: "-".into(), name: "part-00000.snappy.parquet".into(), size: "42.0 MB".into(),
-                      modified: "2024-11-01 11:58".into(), owner: "spark".into(), perms: "644".into() },
-            FileRow { type_sym: "-".into(), name: "part-00001.snappy.parquet".into(), size: "41.3 MB".into(),
-                      modified: "2024-11-01 11:58".into(), owner: "spark".into(), perms: "644".into() },
+            FileRow {
+                type_sym: "-".into(),
+                name: "part-00000.snappy.parquet".into(),
+                size: "42.0 MB".into(),
+                modified: "2024-11-01 11:58".into(),
+                owner: "spark".into(),
+                perms: "644".into(),
+            },
+            FileRow {
+                type_sym: "-".into(),
+                name: "part-00001.snappy.parquet".into(),
+                size: "41.3 MB".into(),
+                modified: "2024-11-01 11:58".into(),
+                owner: "spark".into(),
+                perms: "644".into(),
+            },
         ];
         println!("{}", "(demo output)".dimmed());
         print_rows(&rows, fmt)?;
@@ -166,7 +216,13 @@ async fn ls(_cfg: &Config, profile: &crate::config::Profile, path: &str, all: bo
     Ok(())
 }
 
-async fn cp(_cfg: &Config, profile: &crate::config::Profile, src: &str, dst: &str, overwrite: bool) -> Result<()> {
+async fn cp(
+    _cfg: &Config,
+    profile: &crate::config::Profile,
+    src: &str,
+    dst: &str,
+    overwrite: bool,
+) -> Result<()> {
     let src_hdfs = hdfs_base_url(profile, src);
     let dst_hdfs = hdfs_base_url(profile, dst);
 
@@ -175,11 +231,11 @@ async fn cp(_cfg: &Config, profile: &crate::config::Profile, src: &str, dst: &st
         (Some(src_base), Some(dst_base)) => {
             println!("{} {} → {}", "cp".cyan().bold(), src, dst);
 
-            let src_path  = hdfs_path_only(src);
-            let dst_path  = hdfs_path_only(dst);
+            let src_path = hdfs_path_only(src);
+            let dst_path = hdfs_path_only(dst);
             let src_base2 = src_base.clone();
             let dst_base2 = dst_base.clone();
-            let auth      = profile.auth.clone();
+            let auth = profile.auth.clone();
             let overwrite2 = overwrite;
 
             tokio::task::spawn_blocking(move || {
@@ -206,7 +262,8 @@ async fn cp(_cfg: &Config, profile: &crate::config::Profile, src: &str, dst: &st
                 }
 
                 Ok::<_, anyhow::Error>(stat.length)
-            }).await??;
+            })
+            .await??;
 
             println!("{} copied", "✓".green());
         }
@@ -214,34 +271,39 @@ async fn cp(_cfg: &Config, profile: &crate::config::Profile, src: &str, dst: &st
         // ── local → HDFS upload ───────────────────────────────────────────────
         (None, Some(dst_base)) if !src.starts_with("s3") && !src.starts_with("adl") => {
             println!("{} {} → {} (local → HDFS)", "cp".cyan().bold(), src, dst);
-            let data = std::fs::read(src)
-                .with_context(|| format!("reading local file '{}'", src))?;
-            let dst_path  = hdfs_path_only(dst);
-            let auth      = profile.auth.clone();
+            let data =
+                std::fs::read(src).with_context(|| format!("reading local file '{}'", src))?;
+            let data_len = data.len();
+            let dst_path = hdfs_path_only(dst);
+            let auth = profile.auth.clone();
             let overwrite2 = overwrite;
             tokio::task::spawn_blocking(move || {
                 WebHdfsClient::new(&dst_base).write(&dst_path, &data, overwrite2, &auth)
-            }).await??;
-            println!("{} uploaded {} bytes", "✓".green(), data.len());
+            })
+            .await??;
+            println!("{} uploaded {} bytes", "✓".green(), data_len);
         }
 
         // ── HDFS → local download ─────────────────────────────────────────────
         (Some(src_base), None) if !dst.starts_with("s3") && !dst.starts_with("adl") => {
             println!("{} {} → {} (HDFS → local)", "cp".cyan().bold(), src, dst);
             let src_path = hdfs_path_only(src);
-            let auth     = profile.auth.clone();
+            let auth = profile.auth.clone();
             let data = tokio::task::spawn_blocking(move || {
                 WebHdfsClient::new(&src_base).read(&src_path, &auth)
-            }).await??;
-            std::fs::write(dst, &data)
-                .with_context(|| format!("writing local file '{}'", dst))?;
+            })
+            .await??;
+            std::fs::write(dst, &data).with_context(|| format!("writing local file '{}'", dst))?;
             println!("{} downloaded {} bytes", "✓".green(), data.len());
         }
 
         // ── S3 / ADLS or unsupported combination ──────────────────────────────
         _ => {
             println!("{} {} → {}", "cp".cyan().bold(), src, dst);
-            println!("{}", "Non-HDFS paths require the respective cloud CLI:".yellow());
+            println!(
+                "{}",
+                "Non-HDFS paths require the respective cloud CLI:".yellow()
+            );
             println!("{}", "  S3:   aws s3 cp <src> <dst>".dimmed());
             println!("{}", "  ADLS: az storage fs file upload/download".dimmed());
             println!("{}", "  GCS:  gsutil cp <src> <dst>".dimmed());
@@ -258,7 +320,8 @@ async fn mkdir(_cfg: &Config, profile: &crate::config::Profile, path: &str) -> R
         let auth = profile.auth.clone();
         let created = tokio::task::spawn_blocking(move || {
             WebHdfsClient::new(&base_url).mkdir(&path_owned, &auth)
-        }).await??;
+        })
+        .await??;
 
         if created {
             println!("{} created directory {}", "✓".green(), path.cyan());
@@ -266,13 +329,24 @@ async fn mkdir(_cfg: &Config, profile: &crate::config::Profile, path: &str) -> R
             println!("{} directory may already exist: {}", "⚠".yellow(), path);
         }
     } else {
-        println!("{} mkdir only supported for HDFS paths (hdfs://...)", "⚠".yellow());
-        println!("{}", "For S3: aws s3api put-object --bucket <b> --key <prefix>/".dimmed());
+        println!(
+            "{} mkdir only supported for HDFS paths (hdfs://...)",
+            "⚠".yellow()
+        );
+        println!(
+            "{}",
+            "For S3: aws s3api put-object --bucket <b> --key <prefix>/".dimmed()
+        );
     }
     Ok(())
 }
 
-async fn rm(_cfg: &Config, profile: &crate::config::Profile, path: &str, recursive: bool) -> Result<()> {
+async fn rm(
+    _cfg: &Config,
+    profile: &crate::config::Profile,
+    path: &str,
+    recursive: bool,
+) -> Result<()> {
     let hdfs_base = hdfs_base_url(profile, path);
 
     if let Some(base_url) = hdfs_base {
@@ -280,12 +354,17 @@ async fn rm(_cfg: &Config, profile: &crate::config::Profile, path: &str, recursi
         let auth = profile.auth.clone();
         let deleted = tokio::task::spawn_blocking(move || {
             WebHdfsClient::new(&base_url).rm(&path_owned, recursive, &auth)
-        }).await??;
+        })
+        .await??;
 
         if deleted {
             println!("{} deleted {}", "✓".green(), path.cyan());
         } else {
-            println!("{} path not found or already deleted: {}", "⚠".yellow(), path);
+            println!(
+                "{} path not found or already deleted: {}",
+                "⚠".yellow(),
+                path
+            );
         }
     } else {
         if recursive {
@@ -293,7 +372,10 @@ async fn rm(_cfg: &Config, profile: &crate::config::Profile, path: &str, recursi
         } else {
             println!("{} {}", "rm".cyan().bold(), path);
         }
-        println!("{}", "Non-HDFS paths: use aws s3 rm / az storage fs file delete.".yellow());
+        println!(
+            "{}",
+            "Non-HDFS paths: use aws s3 rm / az storage fs file delete.".yellow()
+        );
     }
     Ok(())
 }
@@ -327,7 +409,12 @@ fn hdfs_path_only(uri: &str) -> String {
     uri.to_string()
 }
 
-async fn table_op(_cfg: &Config, profile: &crate::config::Profile, action: TableAction, fmt: OutputFormat) -> Result<()> {
+async fn table_op(
+    _cfg: &Config,
+    profile: &crate::config::Profile,
+    action: TableAction,
+    fmt: OutputFormat,
+) -> Result<()> {
     match action {
         TableAction::Snapshots { table, format } => {
             let sql = match format.as_str() {
@@ -340,7 +427,12 @@ async fn table_op(_cfg: &Config, profile: &crate::config::Profile, action: Table
                 _ => format!("DESCRIBE HISTORY {table} LIMIT 20"),
             };
 
-            println!("{} snapshots for {} ({})", "📸".cyan(), table.cyan(), format.dimmed());
+            println!(
+                "{} snapshots for {} ({})",
+                "📸".cyan(),
+                table.cyan(),
+                format.dimmed()
+            );
             println!("{} {}", "SQL:".dimmed(), sql.dimmed());
 
             let client = LivyClient::new(profile)?;
@@ -356,9 +448,12 @@ async fn table_op(_cfg: &Config, profile: &crate::config::Profile, action: Table
             // Skip the header line and parse into display rows.
             #[derive(Tabled, Serialize)]
             struct SnapRow {
-                #[tabled(rename = "snapshot_id")] id: String,
-                #[tabled(rename = "committed_at")] ts: String,
-                #[tabled(rename = "operation")]    op: String,
+                #[tabled(rename = "snapshot_id")]
+                id: String,
+                #[tabled(rename = "committed_at")]
+                ts: String,
+                #[tabled(rename = "operation")]
+                op: String,
             }
 
             let rows: Vec<SnapRow> = text
@@ -382,9 +477,18 @@ async fn table_op(_cfg: &Config, profile: &crate::config::Profile, action: Table
             }
         }
 
-        TableAction::Vacuum { table, retain_hours, execute } => {
+        TableAction::Vacuum {
+            table,
+            retain_hours,
+            execute,
+        } => {
             if !execute {
-                println!("{} VACUUM {} RETAIN {} HOURS (dry-run)", "🧹".cyan(), table.cyan(), retain_hours);
+                println!(
+                    "{} VACUUM {} RETAIN {} HOURS (dry-run)",
+                    "🧹".cyan(),
+                    table.cyan(),
+                    retain_hours
+                );
                 println!("{}", "Add --execute to actually run the vacuum.".yellow());
                 return Ok(());
             }

@@ -48,11 +48,7 @@ pub async fn run_sql(
 /// Convenience: open a `"sql"` session, run one statement, delete the
 /// session, and return the raw result.  Use when you only need a single
 /// round-trip and don't want to manage the session lifetime yourself.
-pub async fn one_shot_sql(
-    client: &LivyClient,
-    sql: &str,
-    auth: &Auth,
-) -> Result<StatementResult> {
+pub async fn one_shot_sql(client: &LivyClient, sql: &str, auth: &Auth) -> Result<StatementResult> {
     let sid = open_session(client, "sql", auth).await?;
     let result = run_sql(client, sid, sql, auth).await;
     client.delete_session(sid, auth).await.ok();

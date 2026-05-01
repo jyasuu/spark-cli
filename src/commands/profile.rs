@@ -2,9 +2,9 @@ use crate::config::{Auth, Backend, Config, Profile};
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
+use serde::Serialize;
 use std::collections::HashMap;
 use tabled::Tabled;
-use serde::Serialize;
 
 #[derive(Args)]
 pub struct ProfileArgs {
@@ -97,11 +97,30 @@ pub async fn run(args: ProfileArgs, cfg: &mut Config) -> Result<()> {
     match args.action {
         ProfileAction::List => list(cfg),
         ProfileAction::Show { name } => show(cfg, name.as_deref()),
-        ProfileAction::Add { name, backend, master_url, thrift_url, namespace,
-                             auth_method, username, token, description, conf } => {
-            add(cfg, name, backend, master_url, thrift_url, namespace,
-                auth_method, username, token, description, conf)
-        }
+        ProfileAction::Add {
+            name,
+            backend,
+            master_url,
+            thrift_url,
+            namespace,
+            auth_method,
+            username,
+            token,
+            description,
+            conf,
+        } => add(
+            cfg,
+            name,
+            backend,
+            master_url,
+            thrift_url,
+            namespace,
+            auth_method,
+            username,
+            token,
+            description,
+            conf,
+        ),
         ProfileAction::Remove { name } => remove(cfg, &name),
         ProfileAction::Switch { name } => switch(cfg, &name),
         ProfileAction::Alias { action } => alias_cmd(cfg, action),
@@ -126,27 +145,45 @@ struct ProfileRow {
 
 fn list(cfg: &Config) -> Result<()> {
     if cfg.profiles.is_empty() {
-        println!("{}", "No profiles configured. Run: spark-ctrl profile add <name> --master-url <url>".yellow());
+        println!(
+            "{}",
+            "No profiles configured. Run: spark-ctrl profile add <name> --master-url <url>"
+                .yellow()
+        );
         return Ok(());
     }
-    let rows: Vec<ProfileRow> = cfg.profiles.iter().map(|(name, p)| {
-        let is_active = cfg.active_profile.as_deref() == Some(name.as_str());
-        ProfileRow {
-            name: if is_active { format!("{} ★", name).green().to_string() } else { name.clone() },
-            active: if is_active { "yes".green().to_string() } else { String::new() },
-            backend: p.backend.to_string(),
-            master_url: p.master_url.clone(),
-            description: p.description.clone().unwrap_or_default(),
-        }
-    }).collect();
+    let rows: Vec<ProfileRow> = cfg
+        .profiles
+        .iter()
+        .map(|(name, p)| {
+            let is_active = cfg.active_profile.as_deref() == Some(name.as_str());
+            ProfileRow {
+                name: if is_active {
+                    format!("{} ★", name).green().to_string()
+                } else {
+                    name.clone()
+                },
+                active: if is_active {
+                    "yes".green().to_string()
+                } else {
+                    String::new()
+                },
+                backend: p.backend.to_string(),
+                master_url: p.master_url.clone(),
+                description: p.description.clone().unwrap_or_default(),
+            }
+        })
+        .collect();
     use tabled::Table;
-    println!("{}", Table::new(&rows));
+    println!("{}", Table::new(rows));
     Ok(())
 }
 
 fn show(cfg: &Config, name: Option<&str>) -> Result<()> {
     let (name, profile) = if let Some(n) = name {
-        let p = cfg.profiles.get(n)
+        let p = cfg
+            .profiles
+            .get(n)
             .ok_or_else(|| anyhow::anyhow!("profile '{}' not found", n))?;
         (n.to_string(), p)
     } else {
@@ -155,12 +192,28 @@ fn show(cfg: &Config, name: Option<&str>) -> Result<()> {
     };
 
     println!("{} {}", "Profile:".bold(), name.cyan());
-    println!("  {:<16} {}", "backend:".dimmed(),    profile.backend);
-    println!("  {:<16} {}", "master_url:".dimmed(),  profile.master_url);
-    println!("  {:<16} {}", "thrift_url:".dimmed(),  profile.thrift_url.as_deref().unwrap_or("(none)"));
-    println!("  {:<16} {}", "namespace:".dimmed(),   profile.namespace.as_deref().unwrap_or("(none)"));
-    println!("  {:<16} {}", "auth_method:".dimmed(), profile.auth.method.as_deref().unwrap_or("none"));
-    println!("  {:<16} {}", "description:".dimmed(), profile.description.as_deref().unwrap_or(""));
+    println!("  {:<16} {}", "backend:".dimmed(), profile.backend);
+    println!("  {:<16} {}", "master_url:".dimmed(), profile.master_url);
+    println!(
+        "  {:<16} {}",
+        "thrift_url:".dimmed(),
+        profile.thrift_url.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "  {:<16} {}",
+        "namespace:".dimmed(),
+        profile.namespace.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "  {:<16} {}",
+        "auth_method:".dimmed(),
+        profile.auth.method.as_deref().unwrap_or("none")
+    );
+    println!(
+        "  {:<16} {}",
+        "description:".dimmed(),
+        profile.description.as_deref().unwrap_or("")
+    );
     if !profile.spark_conf.is_empty() {
         println!("  {}:", "spark_conf:".dimmed());
         for (k, v) in &profile.spark_conf {
@@ -170,11 +223,19 @@ fn show(cfg: &Config, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add(
-    cfg: &mut Config, name: String, backend: Backend,
-    master_url: String, thrift_url: Option<String>, namespace: Option<String>,
-    auth_method: String, username: Option<String>, token: Option<String>,
-    description: Option<String>, conf: Vec<String>,
+    cfg: &mut Config,
+    name: String,
+    backend: Backend,
+    master_url: String,
+    thrift_url: Option<String>,
+    namespace: Option<String>,
+    auth_method: String,
+    username: Option<String>,
+    token: Option<String>,
+    description: Option<String>,
+    conf: Vec<String>,
 ) -> Result<()> {
     let mut spark_conf = HashMap::new();
     for kv in &conf {
@@ -190,7 +251,11 @@ fn add(
         thrift_url,
         namespace,
         auth: Auth {
-            method: if auth_method == "none" { None } else { Some(auth_method) },
+            method: if auth_method == "none" {
+                None
+            } else {
+                Some(auth_method)
+            },
             username,
             token,
             keytab_path: None,
@@ -219,9 +284,13 @@ fn switch(cfg: &mut Config, name: &str) -> Result<()> {
 
 fn alias_cmd(cfg: &mut Config, action: AliasAction) -> Result<()> {
     match action {
-        AliasAction::List { profile: profile_name } => {
+        AliasAction::List {
+            profile: profile_name,
+        } => {
             let (name, profile) = if let Some(n) = profile_name.as_deref() {
-                let p = cfg.profiles.get(n)
+                let p = cfg
+                    .profiles
+                    .get(n)
                     .ok_or_else(|| anyhow::anyhow!("profile '{}' not found", n))?;
                 (n.to_string(), p)
             } else {
@@ -247,7 +316,9 @@ fn alias_cmd(cfg: &mut Config, action: AliasAction) -> Result<()> {
                     anyhow::bail!("pairs must be KEY=VALUE, got '{}'", p);
                 }
             }
-            let profile = cfg.profiles.get_mut(&name)
+            let profile = cfg
+                .profiles
+                .get_mut(&name)
                 .ok_or_else(|| anyhow::anyhow!("active profile '{}' not found", name))?;
             profile.aliases.insert(alias.clone(), pairs);
             cfg.save()?;
@@ -256,7 +327,9 @@ fn alias_cmd(cfg: &mut Config, action: AliasAction) -> Result<()> {
         AliasAction::Remove { alias } => {
             let (name, _) = cfg.active_profile()?;
             let name = name.to_string();
-            let profile = cfg.profiles.get_mut(&name)
+            let profile = cfg
+                .profiles
+                .get_mut(&name)
                 .ok_or_else(|| anyhow::anyhow!("active profile '{}' not found", name))?;
             if profile.aliases.remove(&alias).is_none() {
                 anyhow::bail!("alias '{}' not found", alias);
