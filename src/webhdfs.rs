@@ -169,6 +169,86 @@ impl WebHdfsClient {
         Ok(r.boolean)
     }
 
+    // ── file read (OPEN) ──────────────────────────────────────────────────────
+
+    /// Download the contents of an HDFS file into memory.
+    ///
+    /// WebHDFS OPEN performs a 307 redirect to the datanode — minreq follows
+    /// redirects automatically, so we just send the OPEN request and read the body.
+    pub fn read(&self, path: &str, auth: &Auth) -> Result<Vec<u8>> {
+        let url = self.webhdfs_url(path, "OPEN", &self.user_param(auth));
+        let req = Self::apply_auth(
+            minreq::get(&url)
+                .with_timeout(300)  // large files may take a while
+                .with_max_redirects(5),
+            auth,
+        );
+        let resp = req.send().with_context(|| format!("GET (OPEN) {}", url))?;
+        if resp.status_code == 404 {
+            bail!("path not found: {}", path);
+        }
+        if resp.status_code >= 400 {
+            bail!("HTTP {} from {}: {}", resp.status_code, url, resp.as_str().unwrap_or(""));
+        }
+        Ok(resp.into_bytes())
+    }
+
+    // ── file write (CREATE) ───────────────────────────────────────────────────
+
+    /// Upload `data` to an HDFS path via WebHDFS CREATE.
+    ///
+    /// WebHDFS CREATE is a two-step redirect: the namenode responds 307 →
+    /// datanode URL, then the client PUTs the body there.  minreq follows
+    /// the redirect, but WebHDFS expects the body only on the second request.
+    /// We detect the Location header on a zero-body PUT and re-send with data.
+    pub fn write(&self, path: &str, data: &[u8], overwrite: bool, auth: &Auth) -> Result<bool> {
+        let extra = format!(
+            "{}&overwrite={}&replication=1",
+            self.user_param(auth),
+            overwrite,
+        );
+        let url = self.webhdfs_url(path, "CREATE", &extra);
+
+        // Step 1: zero-body PUT → expect 307 with Location header
+        let step1 = Self::apply_auth(
+            minreq::put(&url)
+                .with_timeout(30)
+                .with_body(vec![])
+                .with_max_redirects(0),  // do NOT follow — we need the Location
+            auth,
+        );
+        let r1 = step1.send().with_context(|| format!("PUT (CREATE step 1) {}", url))?;
+
+        let datanode_url = if r1.status_code == 307 || r1.status_code == 201 {
+            // Extract Location header (minreq returns headers as lowercase keys)
+            r1.headers.get("location")
+                .or_else(|| r1.headers.get("Location"))
+                .cloned()
+                .unwrap_or_else(|| url.clone())
+        } else if r1.status_code >= 400 {
+            bail!("HTTP {} from {}: {}", r1.status_code, url, r1.as_str().unwrap_or(""));
+        } else {
+            // Some setups respond 201 directly (no datanode redirect)
+            return Ok(true);
+        };
+
+        // Step 2: PUT body to the datanode URL
+        let step2 = Self::apply_auth(
+            minreq::put(&datanode_url)
+                .with_timeout(300)
+                .with_header("Content-Type", "application/octet-stream")
+                .with_body(data.to_vec()),
+            auth,
+        );
+        let r2 = step2.send().with_context(|| format!("PUT (CREATE step 2) {}", datanode_url))?;
+
+        if r2.status_code == 201 || r2.status_code == 200 {
+            Ok(true)
+        } else {
+            bail!("HTTP {} from datanode {}: {}", r2.status_code, datanode_url, r2.as_str().unwrap_or(""));
+        }
+    }
+
     // ── file status (single) ──────────────────────────────────────────────────
 
     pub fn stat(&self, path: &str, auth: &Auth) -> Result<FileStatus> {

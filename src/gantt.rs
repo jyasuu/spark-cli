@@ -139,14 +139,46 @@ pub fn stages_from_json(value: &serde_json::Value) -> Vec<GanttStage> {
 
 fn parse_spark_time(s: Option<&str>) -> Option<i64> {
     let s = s?;
-    // Spark REST timestamps: "2024-11-01T12:00:00.000GMT"
-    // chrono can parse RFC-3339; strip the trailing timezone name if present.
-    let clean = s.trim_end_matches(|c: char| c.is_alphabetic() && c != 'T' && c != 'Z');
+
+    // Fast path: plain integer milliseconds (e.g. from older Spark versions)
+    if let Ok(ms) = s.trim().parse::<i64>() {
+        return Some(ms);
+    }
+
+    // Spark REST timestamps come in several flavours:
+    //   "2024-11-01T12:00:00.000GMT"   — suffix is a named timezone
+    //   "2024-11-01T12:00:00.000Z"     — RFC-3339 UTC
+    //   "2024-11-01T12:00:00.000+00:00"— RFC-3339 with offset
+    //
+    // Strategy: strip any trailing alphabetic timezone name (e.g. "GMT", "UTC",
+    // "EST") that chrono can't parse, then try RFC-3339.  Named zones are
+    // treated as UTC for timeline purposes — wall-clock accuracy matters more
+    // than timezone correctness in a Gantt chart.
+    let clean: &str = {
+        // Find the 'T' separator; everything after must contain only
+        // RFC-3339-legal characters: digits, ':', '.', '+', '-', 'Z'.
+        // Strip trailing alpha chars that aren't 'Z' or 'T'.
+        let bytes = s.as_bytes();
+        let mut end = bytes.len();
+        while end > 0 {
+            let ch = bytes[end - 1] as char;
+            if ch.is_ascii_alphabetic() && ch != 'Z' {
+                end -= 1;
+            } else {
+                break;
+            }
+        }
+        &s[..end]
+    };
+
     chrono::DateTime::parse_from_rfc3339(clean)
         .ok()
         .map(|dt| dt.timestamp_millis())
         .or_else(|| {
-            // fallback: try as plain integer ms
-            s.parse::<i64>().ok()
+            // Last resort: try parsing without fractional seconds
+            // e.g. "2024-11-01T12:00:00Z"
+            chrono::DateTime::parse_from_rfc3339(&format!("{}Z", clean.trim_end_matches('Z')))
+                .ok()
+                .map(|dt| dt.timestamp_millis())
         })
 }

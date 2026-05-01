@@ -60,16 +60,19 @@ async fn handle_conn(mut stream: TcpStream) {
     let path_only = path_qs.split('?').next().unwrap_or(path_qs);
     let segs: Vec<&str> = path_only.trim_matches('/').split('/').collect();
 
-    let body = dispatch(method, &segs, path_only);
+    let (body, content_type) = dispatch(method, &segs, path_qs);
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(), body
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        content_type,
+        body.len(),
+        body
     );
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
 fn dispatch(method: &str, segs: &[&str], path: &str) -> String {
     match (method, segs) {
+        // ── Livy batch API ────────────────────────────────────────────────────
         ("GET",    ["batches"]) => json(serde_json::json!({
             "from":0,"total":1,"batches":[batch_info(0,"success")]
         })),
@@ -83,13 +86,161 @@ fn dispatch(method: &str, segs: &[&str], path: &str) -> String {
                 "26/01/01 00:00:02 INFO SparkContext: Successfully stopped SparkContext"
             ]
         })),
+
+        // ── Livy session / statement API ──────────────────────────────────────
         ("POST",   ["sessions"]) => json(session_info(1, "idle")),
         ("GET",    ["sessions", _]) => json(session_info(1, "idle")),
         ("DELETE", ["sessions", _]) => json(serde_json::json!({"msg":"deleted"})),
         ("POST",   ["sessions", _, "statements"]) => json(statement_ok(0)),
         ("GET",    ["sessions", _, "statements", _]) => json(statement_ok(0)),
+
+        // ── WebHDFS API ───────────────────────────────────────────────────────
+        // LISTSTATUS — ls
+        ("GET", segs) if path.contains("/webhdfs/v1/") && path.contains("op=LISTSTATUS") => {
+            json(serde_json::json!({
+                "FileStatuses": {
+                    "FileStatus": [
+                        {
+                            "pathSuffix": "part-00000.snappy.parquet",
+                            "type": "FILE",
+                            "length": 44_040_192u64,
+                            "owner": "spark",
+                            "modificationTime": 1_735_689_600_000u64,
+                            "permission": "644",
+                            "replication": 3,
+                            "blockSize": 134_217_728u64
+                        },
+                        {
+                            "pathSuffix": "part-00001.snappy.parquet",
+                            "type": "FILE",
+                            "length": 43_302_912u64,
+                            "owner": "spark",
+                            "modificationTime": 1_735_689_600_000u64,
+                            "permission": "644",
+                            "replication": 3,
+                            "blockSize": 134_217_728u64
+                        }
+                    ]
+                }
+            }))
+        }
+        // GETFILESTATUS — stat
+        ("GET", segs) if path.contains("/webhdfs/v1/") && path.contains("op=GETFILESTATUS") => {
+            json(serde_json::json!({
+                "FileStatus": {
+                    "pathSuffix": "",
+                    "type": "FILE",
+                    "length": 1024u64,
+                    "owner": "spark",
+                    "modificationTime": 1_735_689_600_000u64,
+                    "permission": "644",
+                    "replication": 3,
+                    "blockSize": 134_217_728u64
+                }
+            }))
+        }
+        // OPEN — read file (return dummy bytes)
+        ("GET", segs) if path.contains("/webhdfs/v1/") && path.contains("op=OPEN") => {
+            "hello from mock webhdfs".to_string()
+        }
+        // CREATE step 1 — return a redirect Location header is not practical in
+        // this raw-TCP mock, so we return 201 directly (single-step path)
+        ("PUT", segs) if path.contains("/webhdfs/v1/") && path.contains("op=CREATE") => {
+            json(serde_json::json!({"boolean": true}))
+        }
+        // DELETE — rm
+        ("DELETE", segs) if path.contains("/webhdfs/v1/") => {
+            json(serde_json::json!({"boolean": true}))
+        }
+        // MKDIRS — mkdir
+        ("PUT", segs) if path.contains("/webhdfs/v1/") && path.contains("op=MKDIRS") => {
+            json(serde_json::json!({"boolean": true}))
+        }
+
+        // ── Spark REST API — stages (used by diag skew + diag timeline) ───────
+        // /api/v1/applications/{app_id}/stages
+        ("GET", ["api", "v1", "applications", _, "stages"]) => {
+            json(mock_stages())
+        }
+        // /api/v1/applications/{app_id}/stages/{stage_id}
+        ("GET", ["api", "v1", "applications", _, "stages", _]) => {
+            json(serde_json::json!([mock_stage_detail()]))
+        }
+
         _ => json(serde_json::json!({"error":"not found","path": path})),
     }
+}
+
+// ── Spark REST mock payloads ──────────────────────────────────────────────────
+
+/// Four-stage application timeline, mirrors the demo data in gantt.rs.
+fn mock_stages() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "stageId": 0,
+            "status": "COMPLETE",
+            "numTasks": 4,
+            "submissionTime": "2026-01-01T00:00:00.000Z",
+            "completionTime": "2026-01-01T00:00:01.200Z",
+            "name": "parallelize at script.py:5"
+        },
+        {
+            "stageId": 1,
+            "status": "COMPLETE",
+            "numTasks": 16,
+            "submissionTime": "2026-01-01T00:00:01.100Z",
+            "completionTime": "2026-01-01T00:00:04.500Z",
+            "name": "map at script.py:12"
+        },
+        {
+            "stageId": 2,
+            "status": "ACTIVE",
+            "numTasks": 32,
+            "submissionTime": "2026-01-01T00:00:04.300Z",
+            "completionTime": "2026-01-01T00:00:13.000Z",
+            "name": "reduceByKey at script.py:18"
+        },
+        {
+            "stageId": 3,
+            "status": "PENDING",
+            "numTasks": 8,
+            "submissionTime": "2026-01-01T00:00:12.900Z",
+            "completionTime": "2026-01-01T00:00:15.000Z",
+            "name": "saveAsTextFile at script.py:22"
+        }
+    ])
+}
+
+/// Single stage with task-level metrics for skew detection tests.
+/// Includes two tasks with executor run times of 100 ms and 800 ms
+/// so max/median = 8.0×, well above the default 3.0× threshold.
+fn mock_stage_detail() -> serde_json::Value {
+    serde_json::json!({
+        "stageId": 2,
+        "status": "COMPLETE",
+        "numTasks": 2,
+        "submissionTime": "2026-01-01T00:00:04.300Z",
+        "completionTime": "2026-01-01T00:00:13.000Z",
+        "name": "reduceByKey at script.py:18",
+        "tasks": {
+            "0": {
+                "taskId": 0,
+                "index": 0,
+                "status": "SUCCESS",
+                "taskMetrics": {
+                    "executorRunTime": 100.0
+                }
+            },
+            "1": {
+                "taskId": 1,
+                "index": 1,
+                "status": "SUCCESS",
+                "taskMetrics": {
+                    "executorRunTime": 800.0
+                }
+            }
+        }
+    })
 }
 
 fn batch_info(id: u64, state: &str) -> serde_json::Value {

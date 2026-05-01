@@ -34,6 +34,9 @@ pub enum FsAction {
         src: String,
         #[arg(value_name = "DST")]
         dst: String,
+        /// Overwrite destination if it already exists
+        #[arg(long, short)]
+        overwrite: bool,
     },
     /// Delete a file or directory
     Rm {
@@ -42,6 +45,11 @@ pub enum FsAction {
         /// Recursive delete
         #[arg(short, long)]
         recursive: bool,
+    },
+    /// Create a directory (and any missing parents)
+    Mkdir {
+        #[arg(value_name = "PATH")]
+        path: String,
     },
     /// Inspect a Delta/Iceberg table (snapshot list, vacuum)
     Table {
@@ -78,8 +86,9 @@ pub async fn run(args: FsArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
     match args.action {
         FsAction::Ls { path, all, long } => ls(cfg, profile, &path, all, long, fmt).await,
-        FsAction::Cp { src, dst } => cp(cfg, profile, &src, &dst).await,
+        FsAction::Cp { src, dst, overwrite } => cp(cfg, profile, &src, &dst, overwrite).await,
         FsAction::Rm { path, recursive } => rm(cfg, profile, &path, recursive).await,
+        FsAction::Mkdir { path } => mkdir(cfg, profile, &path).await,
         FsAction::Table { action } => table_op(cfg, profile, action, fmt).await,
     }
 }
@@ -157,14 +166,109 @@ async fn ls(_cfg: &Config, profile: &crate::config::Profile, path: &str, all: bo
     Ok(())
 }
 
-async fn cp(_cfg: &Config, _profile: &crate::config::Profile, src: &str, dst: &str) -> Result<()> {
-    println!("{} {} → {}", "cp".cyan().bold(), src, dst);
-    // WebHDFS has no native server-side copy; the standard approach is:
-    // 1. Open a read stream on src  2. Create dst  3. Stream bytes
-    // This requires chunked streaming which is out of scope for minreq.
-    // In production use: hadoop fs -cp, or an aws s3 cp / azcopy call.
-    println!("{}", "WebHDFS does not support server-side copy natively.".yellow());
-    println!("{}", "Use: hadoop fs -cp <src> <dst>  (or aws s3 cp / azcopy)".dimmed());
+async fn cp(_cfg: &Config, profile: &crate::config::Profile, src: &str, dst: &str, overwrite: bool) -> Result<()> {
+    let src_hdfs = hdfs_base_url(profile, src);
+    let dst_hdfs = hdfs_base_url(profile, dst);
+
+    match (src_hdfs, dst_hdfs) {
+        // ── both paths are HDFS: stream via WebHDFS ──────────────────────────
+        (Some(src_base), Some(dst_base)) => {
+            println!("{} {} → {}", "cp".cyan().bold(), src, dst);
+
+            let src_path  = hdfs_path_only(src);
+            let dst_path  = hdfs_path_only(dst);
+            let src_base2 = src_base.clone();
+            let dst_base2 = dst_base.clone();
+            let auth      = profile.auth.clone();
+            let overwrite2 = overwrite;
+
+            tokio::task::spawn_blocking(move || {
+                let src_client = WebHdfsClient::new(&src_base2);
+                let dst_client = WebHdfsClient::new(&dst_base2);
+
+                // 1. Stat the source to get its size for progress reporting
+                let stat = src_client.stat(&src_path, &auth)?;
+                if stat.r#type == "DIRECTORY" {
+                    anyhow::bail!(
+                        "source '{}' is a directory — use 'fs cp' on individual files or \
+                         'hadoop fs -cp' for recursive directory copies",
+                        src_path
+                    );
+                }
+
+                // 2. Read the full file into memory via OPEN
+                let data = src_client.read(&src_path, &auth)?;
+
+                // 3. Write to destination via CREATE
+                let written = dst_client.write(&dst_path, &data, overwrite2, &auth)?;
+                if !written {
+                    anyhow::bail!("WebHDFS CREATE returned false for '{}'", dst_path);
+                }
+
+                Ok::<_, anyhow::Error>(stat.length)
+            }).await??;
+
+            println!("{} copied", "✓".green());
+        }
+
+        // ── local → HDFS upload ───────────────────────────────────────────────
+        (None, Some(dst_base)) if !src.starts_with("s3") && !src.starts_with("adl") => {
+            println!("{} {} → {} (local → HDFS)", "cp".cyan().bold(), src, dst);
+            let data = std::fs::read(src)
+                .with_context(|| format!("reading local file '{}'", src))?;
+            let dst_path  = hdfs_path_only(dst);
+            let auth      = profile.auth.clone();
+            let overwrite2 = overwrite;
+            tokio::task::spawn_blocking(move || {
+                WebHdfsClient::new(&dst_base).write(&dst_path, &data, overwrite2, &auth)
+            }).await??;
+            println!("{} uploaded {} bytes", "✓".green(), data.len());
+        }
+
+        // ── HDFS → local download ─────────────────────────────────────────────
+        (Some(src_base), None) if !dst.starts_with("s3") && !dst.starts_with("adl") => {
+            println!("{} {} → {} (HDFS → local)", "cp".cyan().bold(), src, dst);
+            let src_path = hdfs_path_only(src);
+            let auth     = profile.auth.clone();
+            let data = tokio::task::spawn_blocking(move || {
+                WebHdfsClient::new(&src_base).read(&src_path, &auth)
+            }).await??;
+            std::fs::write(dst, &data)
+                .with_context(|| format!("writing local file '{}'", dst))?;
+            println!("{} downloaded {} bytes", "✓".green(), data.len());
+        }
+
+        // ── S3 / ADLS or unsupported combination ──────────────────────────────
+        _ => {
+            println!("{} {} → {}", "cp".cyan().bold(), src, dst);
+            println!("{}", "Non-HDFS paths require the respective cloud CLI:".yellow());
+            println!("{}", "  S3:   aws s3 cp <src> <dst>".dimmed());
+            println!("{}", "  ADLS: az storage fs file upload/download".dimmed());
+            println!("{}", "  GCS:  gsutil cp <src> <dst>".dimmed());
+        }
+    }
+    Ok(())
+}
+
+async fn mkdir(_cfg: &Config, profile: &crate::config::Profile, path: &str) -> Result<()> {
+    let hdfs_base = hdfs_base_url(profile, path);
+
+    if let Some(base_url) = hdfs_base {
+        let path_owned = hdfs_path_only(path);
+        let auth = profile.auth.clone();
+        let created = tokio::task::spawn_blocking(move || {
+            WebHdfsClient::new(&base_url).mkdir(&path_owned, &auth)
+        }).await??;
+
+        if created {
+            println!("{} created directory {}", "✓".green(), path.cyan());
+        } else {
+            println!("{} directory may already exist: {}", "⚠".yellow(), path);
+        }
+    } else {
+        println!("{} mkdir only supported for HDFS paths (hdfs://...)", "⚠".yellow());
+        println!("{}", "For S3: aws s3api put-object --bucket <b> --key <prefix>/".dimmed());
+    }
     Ok(())
 }
 
@@ -208,6 +312,19 @@ fn hdfs_base_url(profile: &crate::config::Profile, path: &str) -> Option<String>
         return Some(url.clone());
     }
     None
+}
+
+/// Extract just the HDFS path component from a full `hdfs://host:port/path` URI.
+/// Returns the original string unchanged for bare paths (e.g. `/user/spark/data`).
+fn hdfs_path_only(uri: &str) -> String {
+    if let Some(rest) = uri.strip_prefix("hdfs://") {
+        // rest = "host:port/path/to/file"
+        if let Some(slash) = rest.find('/') {
+            return rest[slash..].to_string();
+        }
+        return "/".to_string();
+    }
+    uri.to_string()
 }
 
 async fn table_op(_cfg: &Config, profile: &crate::config::Profile, action: TableAction, fmt: OutputFormat) -> Result<()> {
