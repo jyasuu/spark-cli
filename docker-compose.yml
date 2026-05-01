@@ -1,0 +1,185 @@
+services:
+  # ── Spark ────────────────────────────────────────────────────
+  spark-iceberg:
+    image: tabulario/spark-iceberg
+    container_name: spark-iceberg
+    build: spark/
+    networks:
+      iceberg_net:
+    depends_on:
+      - rest
+      - minio
+    volumes:
+      - ./warehouse:/home/iceberg/warehouse
+      - ./notebooks:/home/iceberg/notebooks/notebooks
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    ports:
+      - 8888:8888
+      - 8080:8080
+      - 10000:10000
+      - 10001:10001
+
+  # ── Iceberg REST catalog ─────────────────────────────────────────────────────
+  rest:
+    image: apache/iceberg-rest-fixture
+    container_name: iceberg-rest
+    networks:
+      iceberg_net:
+    ports:
+      - "8181:8181"
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - CATALOG_WAREHOUSE=s3a://warehouse/
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+    depends_on:
+      mc:
+        condition: service_started
+
+  # ── MinIO object store ───────────────────────────────────────────────────────
+  minio:
+    image: minio/minio
+    container_name: minio
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DOMAIN=minio
+    networks:
+      iceberg_net:
+        aliases:
+          - warehouse.minio
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    command: ["server", "/data", "--console-address", ":9001"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── MinIO bucket bootstrap ───────────────────────────────────────────────────
+  mc:
+    image: minio/mc
+    container_name: mc
+    networks:
+      iceberg_net:
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: |
+      /bin/sh -c "
+      until (/usr/bin/mc alias set minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc rm -r --force minio/warehouse;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc policy set public minio/warehouse;
+      echo 'MinIO bucket ready.';
+      tail -f /dev/null
+      "
+
+  # ── PostgreSQL source database ───────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: iceberg-postgres
+    networks:
+      iceberg_net:
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=shop
+      - POSTGRES_USER=app
+      - POSTGRES_PASSWORD=secret
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── RabbitMQ message broker ──────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: iceberg-rabbitmq
+    networks:
+      iceberg_net:
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # Management UI  (guest/guest)
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+
+  # ── Iceberg data initialiser ─────────────────────────────────────────────────
+  # Runs once to seed Iceberg with example data from PostgreSQL.
+  # Switch between two modes in sync-init.yaml:
+  #   Option A (default) – sync the real tables from postgres/init.sql
+  #   Option B           – generate 10 000 synthetic user rows via SQL
+  iceberg-init:
+    image: ghcr.io/jyasuu/iceberg-cli:main
+    container_name: iceberg-init
+    networks:
+      iceberg_net:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rest:
+        condition: service_started
+      mc:
+        condition: service_started
+    volumes:
+      - ./sync-init.yaml:/sync-init.yaml:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        CLI="iceberg-cli --uri http://rest:8181 --s3-endpoint http://minio:9000"
+
+        echo "==> Syncing tables..."
+        $$CLI sync --config /sync-init.yaml
+
+        echo ""
+        echo "==> Scanning demo.products"
+        $$CLI scan --table demo.products
+
+        echo ""
+        echo "==> Scanning demo.orders"
+        $$CLI scan --table demo.orders
+
+        echo ""
+        echo "==> Scanning demo.order_items"
+        $$CLI scan --table demo.order_items
+
+        # Option B: uncomment if using generated data instead
+        echo ""
+        echo "==> Scanning demo.users_generated"
+        $$CLI scan --table demo.users_generated
+
+        echo ""
+        echo "==> Done."
+    restart: "no"
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+
+networks:
+  iceberg_net:
+
+volumes:
+  postgres_data:
