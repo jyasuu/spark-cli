@@ -13,11 +13,11 @@ LIVY_HOME=${LIVY_HOME:-/opt/livy}
 # ── Find the original spark-iceberg start script ──────────────────────────────
 # tabulario/spark-iceberg uses /bin/start-spark.sh as its CMD.
 # We exec it at the end so this process becomes Spark (PID inherits).
-SPARK_START=/bin/start-spark.sh
+SPARK_START=/opt/spark/entrypoint.sh 
 if [ ! -x "$SPARK_START" ]; then
   echo "[livy] ERROR: cannot find base start script at $SPARK_START"
   echo "[livy] Available scripts in /bin:"
-  ls /bin/start-*.sh 2>/dev/null || true
+  ls /opt/spark/start-*.sh 2>/dev/null || true
   exit 1
 fi
 
@@ -44,4 +44,4 @@ done
 
 # ── Hand off to Spark ─────────────────────────────────────────────────────────
 echo "[livy] Handing off to $SPARK_START ..."
-exec "$SPARK_START"
+exec "$SPARK_START" notebook
