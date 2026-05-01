@@ -25,12 +25,18 @@ pub mod mock_livy;
 #[cfg(feature = "integration")]
 pub mod integ_env;
 
+#[cfg(feature = "integration")]
+pub mod helpers;
+
 // ── re-exports ──────────────────────────────────────────────────────────────
 
 pub use mock_livy::MockLivy;
 
 #[cfg(feature = "integration")]
 pub use integ_env::IntegEnv;
+
+#[cfg(feature = "integration")]
+pub use helpers::{parse_count, sql as run_sql, latest_snapshot_op};
 
 // ── shared profile builder ──────────────────────────────────────────────────
 
