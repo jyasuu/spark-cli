@@ -1,13 +1,12 @@
 FROM tabulario/spark-iceberg
 
-# ── Apache Livy 0.8.0-incubating (Spark 3.x / Scala 2.12) ────────────────────
-# Livy is not included in tabulario/spark-iceberg, so we install it here.
-# The binary release requires no build — just download, extract, configure,
-# and wire its start into the existing entrypoint.
+# ── Apache Livy 0.8.0-incubating ─────────────────────────────────────────────
+# tabulario/spark-iceberg does not include Livy.  We install it here.
+# The base image has no ENTRYPOINT — it uses CMD ["/bin/start-spark.sh"].
+# We replace CMD with our wrapper which starts Livy, then exec's the original.
 
 ENV LIVY_VERSION=0.8.0-incubating
 ENV LIVY_HOME=/opt/livy
-ENV LIVY_CONF_DIR=/opt/livy/conf
 ENV SPARK_HOME=/opt/spark
 
 # Install Livy binary release
@@ -19,25 +18,23 @@ RUN curl -fsSL \
   && rm /tmp/livy.zip
 
 # ── Livy configuration ────────────────────────────────────────────────────────
-# livy.conf  — tell Livy where Spark lives and allow local file submissions
-RUN cp ${LIVY_CONF_DIR}/livy.conf.template ${LIVY_CONF_DIR}/livy.conf && \
-    echo "livy.spark.master = local[*]"                             >> ${LIVY_CONF_DIR}/livy.conf && \
-    echo "livy.spark.deploy-mode = client"                          >> ${LIVY_CONF_DIR}/livy.conf && \
-    echo "livy.file.local-dir-whitelist = /home/iceberg/scripts"    >> ${LIVY_CONF_DIR}/livy.conf && \
-    echo "livy.server.port = 8998"                                  >> ${LIVY_CONF_DIR}/livy.conf
+RUN cp ${LIVY_HOME}/conf/livy.conf.template ${LIVY_HOME}/conf/livy.conf \
+  && echo "livy.spark.master = local[*]"                           >> ${LIVY_HOME}/conf/livy.conf \
+  && echo "livy.spark.deploy-mode = client"                        >> ${LIVY_HOME}/conf/livy.conf \
+  && echo "livy.file.local-dir-whitelist = /home/iceberg/scripts"  >> ${LIVY_HOME}/conf/livy.conf \
+  && echo "livy.server.port = 8998"                                >> ${LIVY_HOME}/conf/livy.conf
 
-# livy-env.sh — point Livy at the Spark installation inside this image
-RUN cp ${LIVY_CONF_DIR}/livy-env.sh.template ${LIVY_CONF_DIR}/livy-env.sh && \
-    echo "export JAVA_HOME=\$(dirname \$(dirname \$(readlink -f \$(which java))))" >> ${LIVY_CONF_DIR}/livy-env.sh && \
-    echo "export SPARK_HOME=${SPARK_HOME}"                                         >> ${LIVY_CONF_DIR}/livy-env.sh && \
-    echo "export HADOOP_CONF_DIR="                                                 >> ${LIVY_CONF_DIR}/livy-env.sh
+RUN cp ${LIVY_HOME}/conf/livy-env.sh.template ${LIVY_HOME}/conf/livy-env.sh \
+  && echo 'export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))' >> ${LIVY_HOME}/conf/livy-env.sh \
+  && echo "export SPARK_HOME=${SPARK_HOME}"                                     >> ${LIVY_HOME}/conf/livy-env.sh \
+  && echo "export HADOOP_CONF_DIR="                                             >> ${LIVY_HOME}/conf/livy-env.sh
 
 # ── Entrypoint wrapper ────────────────────────────────────────────────────────
-# The base image starts Spark services via /bin/start-spark.sh (or similar).
-# We wrap it: start Livy in the background first, then exec the original CMD.
 COPY start-with-livy.sh /usr/local/bin/start-with-livy.sh
 RUN chmod +x /usr/local/bin/start-with-livy.sh
 
 EXPOSE 8998
 
-ENTRYPOINT ["/usr/local/bin/start-with-livy.sh"]
+# Override CMD (not ENTRYPOINT) to match the base image's convention.
+# The base image has no ENTRYPOINT, so CMD is the full command that runs.
+CMD ["/usr/local/bin/start-with-livy.sh"]
