@@ -118,16 +118,16 @@ pub fn stages_from_json(value: &serde_json::Value) -> Vec<GanttStage> {
         let status      = s["status"].as_str().unwrap_or("UNKNOWN").to_string();
         let num_tasks   = s["numTasks"].as_u64().unwrap_or(0) as u32;
 
-        // Spark REST uses ISO-8601 strings for submission/completion times
-        let start_ms = parse_spark_time(s["submissionTime"].as_str())
-            .or_else(|| parse_spark_time(s["firstTaskLaunchedTime"].as_str()))
+        // Spark REST uses ISO-8601 strings OR plain integer milliseconds.
+        // Try both: as_str() for string timestamps, as_i64() for numeric ones.
+        let start_ms = parse_spark_time_value(&s["submissionTime"])
+            .or_else(|| parse_spark_time_value(&s["firstTaskLaunchedTime"]))
             .unwrap_or(0);
 
-        let end_ms = parse_spark_time(s["completionTime"].as_str())
+        let end_ms = parse_spark_time_value(&s["completionTime"])
             .unwrap_or(start_ms + 1);
 
         let duration_ms = (end_ms - start_ms).max(1);
-
         let name = s["name"].as_str().unwrap_or("stage").to_string();
 
         Some(GanttStage { stage_id, name, start_ms, duration_ms, status, num_tasks })
@@ -135,6 +135,17 @@ pub fn stages_from_json(value: &serde_json::Value) -> Vec<GanttStage> {
 
     stages.sort_by_key(|s| s.start_ms);
     stages
+}
+
+/// Parse a Spark REST timestamp field that may be either a JSON string or a
+/// JSON number (integer milliseconds since epoch).
+fn parse_spark_time_value(v: &serde_json::Value) -> Option<i64> {
+    // Fast path: numeric — treat directly as epoch milliseconds
+    if let Some(ms) = v.as_i64() {
+        return Some(ms);
+    }
+    // String path: ISO-8601 in various flavours
+    parse_spark_time(v.as_str())
 }
 
 fn parse_spark_time(s: Option<&str>) -> Option<i64> {

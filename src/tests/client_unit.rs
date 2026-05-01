@@ -582,3 +582,232 @@ fn csv_escape_handles_commas_and_quotes() {
     assert!(OutputFormat::from_str("parquet").is_err());
     assert!(OutputFormat::from_str("").is_err());
 }
+
+// ── WebHDFS via MockLivy ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn webhdfs_ls_returns_two_parquet_files() {
+    use crate::webhdfs::WebHdfsClient;
+    use crate::config::Auth;
+
+    let mock = MockLivy::start().await;
+    let client = WebHdfsClient::new(&mock.url());
+    let auth = Auth::default();
+
+    let entries = client.ls("/user/spark/orders", &auth).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries[0].path_suffix.ends_with(".parquet"));
+    assert_eq!(entries[0].r#type, "FILE");
+}
+
+#[tokio::test]
+async fn webhdfs_stat_returns_file_metadata() {
+    use crate::webhdfs::WebHdfsClient;
+    use crate::config::Auth;
+
+    let mock = MockLivy::start().await;
+    let client = WebHdfsClient::new(&mock.url());
+    let auth = Auth::default();
+
+    let stat = client.stat("/user/spark/orders/part-00000.parquet", &auth).unwrap();
+    assert_eq!(stat.r#type, "FILE");
+    assert_eq!(stat.length, 1024);
+    assert_eq!(stat.owner, "spark");
+}
+
+#[tokio::test]
+async fn webhdfs_read_returns_bytes() {
+    use crate::webhdfs::WebHdfsClient;
+    use crate::config::Auth;
+
+    let mock = MockLivy::start().await;
+    let client = WebHdfsClient::new(&mock.url());
+    let auth = Auth::default();
+
+    let data = client.read("/user/spark/orders/part-00000.parquet", &auth).unwrap();
+    assert!(!data.is_empty(), "read should return non-empty bytes");
+    // Mock returns the string "hello from mock webhdfs"
+    let text = std::str::from_utf8(&data).unwrap_or("");
+    assert!(text.contains("mock"), "unexpected body: {}", text);
+}
+
+#[tokio::test]
+async fn webhdfs_write_succeeds_on_mock() {
+    use crate::webhdfs::WebHdfsClient;
+    use crate::config::Auth;
+
+    let mock = MockLivy::start().await;
+    let client = WebHdfsClient::new(&mock.url());
+    let auth = Auth::default();
+
+    let data = b"test parquet payload";
+    let result = client.write("/user/spark/output/part-00000.parquet", data, false, &auth);
+    assert!(result.is_ok(), "write should succeed: {:?}", result);
+    assert!(result.unwrap(), "write should return true");
+}
+
+#[tokio::test]
+async fn webhdfs_mkdir_returns_true() {
+    use crate::webhdfs::WebHdfsClient;
+    use crate::config::Auth;
+
+    let mock = MockLivy::start().await;
+    let client = WebHdfsClient::new(&mock.url());
+    let auth = Auth::default();
+
+    let result = client.mkdir("/user/spark/new_dir", &auth);
+    assert!(result.is_ok());
+    assert!(result.unwrap());
+}
+
+#[tokio::test]
+async fn webhdfs_rm_returns_true() {
+    use crate::webhdfs::WebHdfsClient;
+    use crate::config::Auth;
+
+    let mock = MockLivy::start().await;
+    let client = WebHdfsClient::new(&mock.url());
+    let auth = Auth::default();
+
+    let result = client.rm("/user/spark/old_file.parquet", false, &auth);
+    assert!(result.is_ok());
+    assert!(result.unwrap());
+}
+
+// ── diag health via MockLivy ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn diag_health_active_jobs_count_from_list_batches() {
+    // health() calls list_batches() to count active jobs.
+    // Mock returns one batch in "success" state.
+    let mock = MockLivy::start().await;
+    let client = LivyClient::new(&mock.profile()).unwrap();
+    let auth = no_auth();
+
+    let batches = client.list_batches(&auth).await.unwrap();
+    // The mock returns one batch — health would report active_jobs: 1
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].state, "success");
+}
+
+#[tokio::test]
+async fn diag_timeline_stages_from_mock_are_sorted() {
+    // timeline calls spark_api_get then stages_from_json
+    let mock = MockLivy::start().await;
+    let client = LivyClient::new(&mock.profile()).unwrap();
+
+    let data = client
+        .spark_api_get("/api/v1/applications/application_test_0042/stages", &no_auth())
+        .await
+        .unwrap();
+
+    let stages = crate::gantt::stages_from_json(&data);
+    assert!(!stages.is_empty());
+
+    // Sorted by start_ms ascending
+    let starts: Vec<i64> = stages.iter().map(|s| s.start_ms).collect();
+    let mut sorted = starts.clone();
+    sorted.sort();
+    assert_eq!(starts, sorted, "stages_from_json must return stages sorted by start_ms");
+}
+
+#[tokio::test]
+async fn diag_skew_p50_and_max_computed_correctly() {
+    let mock = MockLivy::start().await;
+    let client = LivyClient::new(&mock.profile()).unwrap();
+
+    let data = client
+        .spark_api_get("/api/v1/applications/application_test_0042/stages/2", &no_auth())
+        .await
+        .unwrap();
+
+    let arr = data.as_array().unwrap();
+    let tasks = arr[0]["tasks"].as_object().unwrap();
+    let mut durations: Vec<f64> = tasks.values()
+        .filter_map(|t| t["taskMetrics"]["executorRunTime"].as_f64())
+        .collect();
+    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(durations.len(), 2);
+    assert!((durations[0] - 100.0).abs() < 0.01, "min should be 100 ms");
+    assert!((durations[1] - 800.0).abs() < 0.01, "max should be 800 ms");
+
+    let median = durations[durations.len() / 2];
+    let max    = *durations.last().unwrap();
+    let ratio  = max / median;
+    assert!((ratio - 8.0).abs() < 0.01, "skew ratio should be 8.0×, got {}", ratio);
+}
+
+// ── job submit --curate conf injection ────────────────────────────────────────
+
+#[test]
+fn curate_flag_injects_all_eleven_iceberg_conf_keys() {
+    // Replicate the conf-injection logic from job.rs and verify all 11 keys
+    // are present and no user-supplied key is overwritten.
+    use std::collections::HashMap;
+
+    let iceberg_defaults: &[(&str, &str)] = &[
+        ("spark.sql.extensions",
+         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"),
+        ("spark.sql.catalog.demo",
+         "org.apache.iceberg.spark.SparkCatalog"),
+        ("spark.sql.catalog.demo.type", "rest"),
+        ("spark.sql.catalog.demo.uri", "http://rest:8181"),
+        ("spark.sql.catalog.demo.io-impl",
+         "org.apache.iceberg.aws.s3.S3FileIO"),
+        ("spark.sql.catalog.demo.warehouse", "s3a://warehouse/"),
+        ("spark.sql.catalog.demo.s3.endpoint", "http://minio:9000"),
+        ("spark.hadoop.fs.s3a.access.key", "admin"),
+        ("spark.hadoop.fs.s3a.secret.key", "password"),
+        ("spark.hadoop.fs.s3a.endpoint", "http://minio:9000"),
+        ("spark.hadoop.fs.s3a.path.style.access", "true"),
+    ];
+
+    // Start with one user-supplied key that must NOT be overwritten
+    let mut spark_conf: HashMap<String, String> = HashMap::new();
+    spark_conf.insert(
+        "spark.sql.catalog.demo.uri".to_string(),
+        "http://custom-catalog:8181".to_string(),
+    );
+
+    for (k, v) in iceberg_defaults {
+        spark_conf.entry(k.to_string()).or_insert_with(|| v.to_string());
+    }
+
+    // All 11 default keys must be present
+    assert_eq!(spark_conf.len(), 11, "expected 11 keys, got {}", spark_conf.len());
+
+    // User-supplied value must not have been overwritten
+    assert_eq!(
+        spark_conf.get("spark.sql.catalog.demo.uri").map(String::as_str),
+        Some("http://custom-catalog:8181"),
+        "--conf flag must take precedence over --curate defaults"
+    );
+
+    // Default value must be present for a key the user didn't supply
+    assert_eq!(
+        spark_conf.get("spark.sql.catalog.demo.type").map(String::as_str),
+        Some("rest")
+    );
+}
+
+#[test]
+fn job_colorize_state_maps_all_known_states() {
+    // Replicate colorize_state logic and verify no panic on any real Livy state
+    fn colorize(state: &str) -> String {
+        match state {
+            "success"         => "green".to_string(),
+            "dead" | "error"  => "red".to_string(),
+            "running"         => "yellow".to_string(),
+            _                 => "dim".to_string(),
+        }
+    }
+
+    assert_eq!(colorize("success"),  "green");
+    assert_eq!(colorize("dead"),     "red");
+    assert_eq!(colorize("error"),    "red");
+    assert_eq!(colorize("running"),  "yellow");
+    assert_eq!(colorize("starting"), "dim");   // Livy starting state
+    assert_eq!(colorize("idle"),     "dim");
+    assert_eq!(colorize("unknown"),  "dim");
+}

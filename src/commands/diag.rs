@@ -124,7 +124,7 @@ async fn ui(profile: &crate::config::Profile, app_id: Option<String>, print_url:
 
 async fn skew(
     client: &LivyClient,
-    _profile: &crate::config::Profile,
+    profile: &crate::config::Profile,
     app_id: &str,
     stage_id: u64,
     threshold: f64,
@@ -133,7 +133,7 @@ async fn skew(
     let path = format!("/api/v1/applications/{}/stages/{}", app_id, stage_id);
     println!("{} Fetching stage metrics for app={} stage={}", "⟳".cyan(), app_id.cyan(), stage_id);
 
-    let stages = match client.spark_api_get(&path, &_profile.auth).await {
+    let stages = match client.spark_api_get(&path, &profile.auth).await {
         Err(e) => {
             println!("{} Could not reach Spark REST API: {}", "⚠".yellow(), e);
             println!("{}", "Ensure the History Server or Spark Master UI is reachable at master_url.".dimmed());
