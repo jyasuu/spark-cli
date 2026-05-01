@@ -1,4 +1,9 @@
+use crate::testing::MockLivy;
+use crate::client::LivyClient;
 
+fn no_auth() -> crate::config::Auth {
+    crate::config::Auth::default()
+}
 
 // ── watch_job state-sequence polling ─────────────────────────────────────────
 

@@ -3,7 +3,7 @@ use crate::commands::session::{extract_text, one_shot_sql};
 use crate::config::Config;
 use crate::output::{print_rows, OutputFormat};
 use crate::webhdfs::WebHdfsClient;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde::Serialize;
@@ -216,13 +216,14 @@ async fn cp(_cfg: &Config, profile: &crate::config::Profile, src: &str, dst: &st
             println!("{} {} → {} (local → HDFS)", "cp".cyan().bold(), src, dst);
             let data = std::fs::read(src)
                 .with_context(|| format!("reading local file '{}'", src))?;
+            let data_len  = data.len();
             let dst_path  = hdfs_path_only(dst);
             let auth      = profile.auth.clone();
             let overwrite2 = overwrite;
             tokio::task::spawn_blocking(move || {
                 WebHdfsClient::new(&dst_base).write(&dst_path, &data, overwrite2, &auth)
             }).await??;
-            println!("{} uploaded {} bytes", "✓".green(), data.len());
+            println!("{} uploaded {} bytes", "✓".green(), data_len);
         }
 
         // ── HDFS → local download ─────────────────────────────────────────────
