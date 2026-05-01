@@ -71,10 +71,9 @@ jobs:
 
       # ── Bring up the full stack ─────────────────────────────────────────────
       - name: Start docker-compose services
-        # --wait blocks until every service with a healthcheck reports healthy.
-        # spark-iceberg healthchecks Livy on :8998, so this replaces the
-        # manual curl loop that previously failed when the port wasn't exposed.
-        run: docker compose up -d --wait
+        # --build ensures spark/Dockerfile is always rebuilt (never uses cached pull).
+        # --wait blocks until spark-iceberg healthcheck on :8998 passes.
+        run: docker compose up -d --wait --build
         timeout-minutes: 10
 
       - name: Wait for iceberg-init to complete
