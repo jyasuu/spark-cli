@@ -59,6 +59,11 @@ pub enum JobAction {
         /// Send a desktop notification when the job finishes
         #[arg(long)]
         notify: bool,
+        /// Pre-wire Iceberg REST catalog conf (demo namespace, MinIO warehouse).
+        /// Equivalent to passing all spark.sql.catalog.demo.* and
+        /// spark.hadoop.fs.s3a.* conf keys manually.
+        #[arg(long)]
+        curate: bool,
     },
     /// Show the status of a batch job
     Status {
@@ -89,13 +94,38 @@ pub async fn run(args: JobArgs, cfg: &Config, fmt: OutputFormat) -> Result<()> {
 
     match args.action {
         JobAction::Submit { file, class, name, driver_memory, executor_memory,
-                            num_executors, executor_cores, conf, jars, py_files, args: app_args, wait, notify } => {
+                            num_executors, executor_cores, conf, jars, py_files, args: app_args, wait, notify, curate } => {
             let mut spark_conf: HashMap<String, String> = profile.spark_conf.clone();
             for kv in &conf {
                 let parts: Vec<&str> = kv.splitn(2, '=').collect();
                 if parts.len() != 2 { anyhow::bail!("--conf must be KEY=VALUE"); }
                 spark_conf.insert(parts[0].into(), parts[1].into());
             }
+            if curate {
+                let iceberg_defaults: &[(&str, &str)] = &[
+                    ("spark.sql.extensions",
+                     "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"),
+                    ("spark.sql.catalog.demo",
+                     "org.apache.iceberg.spark.SparkCatalog"),
+                    ("spark.sql.catalog.demo.type", "rest"),
+                    ("spark.sql.catalog.demo.uri", "http://rest:8181"),
+                    ("spark.sql.catalog.demo.io-impl",
+                     "org.apache.iceberg.aws.s3.S3FileIO"),
+                    ("spark.sql.catalog.demo.warehouse", "s3a://warehouse/"),
+                    ("spark.sql.catalog.demo.s3.endpoint", "http://minio:9000"),
+                    ("spark.hadoop.fs.s3a.access.key", "admin"),
+                    ("spark.hadoop.fs.s3a.secret.key", "password"),
+                    ("spark.hadoop.fs.s3a.endpoint", "http://minio:9000"),
+                    ("spark.hadoop.fs.s3a.path.style.access", "true"),
+                ];
+                for (k, v) in iceberg_defaults {
+                    // --conf flags take precedence: only insert if not already set
+                    spark_conf.entry(k.to_string()).or_insert_with(|| v.to_string());
+                }
+                println!("{} Iceberg REST catalog conf applied (demo namespace, MinIO warehouse)",
+                         "✓".cyan());
+            }
+
             let req = BatchRequest {
                 file, class_name: class, name: name.clone(),
                 args: app_args, jars, py_files, files: vec![],

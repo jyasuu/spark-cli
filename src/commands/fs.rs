@@ -1,3 +1,5 @@
+use crate::client::LivyClient;
+use crate::commands::session::{extract_text, one_shot_sql};
 use crate::config::Config;
 use crate::output::{print_rows, OutputFormat};
 use crate::webhdfs::WebHdfsClient;
@@ -208,42 +210,73 @@ fn hdfs_base_url(profile: &crate::config::Profile, path: &str) -> Option<String>
     None
 }
 
-async fn table_op(_cfg: &Config, _profile: &crate::config::Profile, action: TableAction, fmt: OutputFormat) -> Result<()> {
+async fn table_op(_cfg: &Config, profile: &crate::config::Profile, action: TableAction, fmt: OutputFormat) -> Result<()> {
     match action {
         TableAction::Snapshots { table, format } => {
-            println!("{} snapshots for {} ({})", "📸".cyan(), table.cyan(), format.dimmed());
             let sql = match format.as_str() {
-                "iceberg" => format!("SELECT snapshot_id, committed_at, operation FROM {}.snapshots ORDER BY committed_at DESC LIMIT 20", table),
-                _         => format!("DESCRIBE HISTORY {} LIMIT 20", table),
+                "iceberg" => format!(
+                    "SELECT snapshot_id, committed_at, operation \
+                     FROM {table}.snapshots \
+                     ORDER BY committed_at DESC \
+                     LIMIT 20"
+                ),
+                _ => format!("DESCRIBE HISTORY {table} LIMIT 20"),
             };
+
+            println!("{} snapshots for {} ({})", "📸".cyan(), table.cyan(), format.dimmed());
             println!("{} {}", "SQL:".dimmed(), sql.dimmed());
 
+            let client = LivyClient::new(profile)?;
+            let result = one_shot_sql(&client, &sql, &profile.auth).await?;
+            let text = extract_text(&result)?;
+
+            if text.trim().is_empty() {
+                println!("{}", "(no snapshots found)".dimmed());
+                return Ok(());
+            }
+
+            // Livy returns text/plain as a tab-separated table.
+            // Skip the header line and parse into display rows.
             #[derive(Tabled, Serialize)]
             struct SnapRow {
-                #[tabled(rename = "ID")]        id: String,
-                #[tabled(rename = "Timestamp")] ts: String,
-                #[tabled(rename = "Operation")] op: String,
-                #[tabled(rename = "Files +")] added: String,
-                #[tabled(rename = "Files -")] removed: String,
+                #[tabled(rename = "snapshot_id")] id: String,
+                #[tabled(rename = "committed_at")] ts: String,
+                #[tabled(rename = "operation")]    op: String,
             }
-            let rows = vec![
-                SnapRow { id: "3821".into(), ts: "2024-11-01 12:00:00".into(), op: "WRITE".into(),   added: "12".into(), removed: "0".into() },
-                SnapRow { id: "3820".into(), ts: "2024-11-01 11:30:00".into(), op: "MERGE".into(),   added: "6".into(),  removed: "3".into() },
-                SnapRow { id: "3819".into(), ts: "2024-11-01 10:00:00".into(), op: "VACUUM END".into(), added: "0".into(), removed: "87".into() },
-            ];
-            print_rows(&rows, fmt)?;
+
+            let rows: Vec<SnapRow> = text
+                .lines()
+                .skip(1)
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| {
+                    let mut parts = l.splitn(3, '\t');
+                    SnapRow {
+                        id: parts.next().unwrap_or("").trim().to_string(),
+                        ts: parts.next().unwrap_or("").trim().to_string(),
+                        op: parts.next().unwrap_or("").trim().to_string(),
+                    }
+                })
+                .collect();
+
+            if rows.is_empty() {
+                println!("{}", text);
+            } else {
+                print_rows(&rows, fmt)?;
+            }
         }
 
         TableAction::Vacuum { table, retain_hours, execute } => {
             if !execute {
                 println!("{} VACUUM {} RETAIN {} HOURS (dry-run)", "🧹".cyan(), table.cyan(), retain_hours);
                 println!("{}", "Add --execute to actually run the vacuum.".yellow());
-            } else {
-                println!("{} Running VACUUM {} RETAIN {} HOURS…", "🧹".green(), table.cyan(), retain_hours);
-                let sql = format!("VACUUM {} RETAIN {} HOURS", table, retain_hours);
-                println!("{} {}", "SQL:".dimmed(), sql.dimmed());
-                println!("{} Vacuum complete.", "✓".green());
+                return Ok(());
             }
+            let sql = format!("VACUUM {table} RETAIN {retain_hours} HOURS");
+            println!("{} Running {}…", "🧹".green(), sql.dimmed());
+            let client = LivyClient::new(profile)?;
+            let result = one_shot_sql(&client, &sql, &profile.auth).await?;
+            extract_text(&result)?;
+            println!("{} Vacuum complete.", "✓".green());
         }
     }
     Ok(())
