@@ -13,18 +13,11 @@
 //!  4. A second sync (simulated by a MERGE INTO) creates an additional snapshot.
 
 use crate::client::LivyClient;
-use crate::commands::session::{one_shot_sql, extract_text};
-use crate::testing::IntegEnv;
+use crate::commands::session::one_shot_sql;
+use crate::testing::{IntegEnv, run_sql as sql};
 
-// ── helper: run SQL against the live Spark Thrift session ─────────────────────
-
-async fn sql(client: &LivyClient, env: &IntegEnv, query: &str) -> String {
-    let auth = env.profile().auth;
-    let result = one_shot_sql(client, query, &auth)
-        .await
-        .expect("SQL execution failed");
-    extract_text(&result).expect("could not extract text from result")
-}
+// ── helper ────────────────────────────────────────────────────────────────────
+// `sql()` is re-exported from testing::helpers — no local copy needed.
 
 // ── Test 1: catalog is reachable and demo namespace is visible ────────────────
 
