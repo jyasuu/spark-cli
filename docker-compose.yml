@@ -1,5 +1,8 @@
 services:
-  # ── Spark ────────────────────────────────────────────────────
+  # ── Spark + Livy ─────────────────────────────────────────────
+  # tabulario/spark-iceberg ships Livy on :8998.  Expose the port and add a
+  # healthcheck so `docker compose up --wait` (and the CI workflow) blocks
+  # until Livy is fully ready before running any tests.
   spark-iceberg:
     image: tabulario/spark-iceberg
     container_name: spark-iceberg
@@ -12,6 +15,9 @@ services:
     volumes:
       - ./warehouse:/home/iceberg/warehouse
       - ./notebooks:/home/iceberg/notebooks/notebooks
+      # Mount scripts so Livy batch jobs can reference them via local path
+      # and so the CI upload step can copy them into MinIO.
+      - ./scripts:/home/iceberg/scripts:ro
     environment:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
@@ -21,6 +27,13 @@ services:
       - 8080:8080
       - 10000:10000
       - 10001:10001
+      - 8998:8998   # Livy REST API
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8998/batches"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
 
   # ── Iceberg REST catalog ─────────────────────────────────────────────────────
   rest:

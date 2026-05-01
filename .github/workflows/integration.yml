@@ -71,26 +71,16 @@ jobs:
 
       # ── Bring up the full stack ─────────────────────────────────────────────
       - name: Start docker-compose services
+        # --wait blocks until every service with a healthcheck reports healthy.
+        # spark-iceberg healthchecks Livy on :8998, so this replaces the
+        # manual curl loop that previously failed when the port wasn't exposed.
         run: docker compose up -d --wait
-        # docker compose v2 --wait polls healthchecks before returning.
-        # Services: spark-iceberg, iceberg-rest, minio, mc, postgres, rabbitmq, iceberg-init
-
-      - name: Wait for Livy to be ready
-        run: |
-          echo "Waiting for Livy on :8998..."
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:8998/batches > /dev/null 2>&1; then
-              echo "Livy is up after ${i}s"
-              break
-            fi
-            sleep 5
-          done
-          curl -sf http://localhost:8998/batches || (echo "Livy not ready" && exit 1)
+        timeout-minutes: 10
 
       - name: Wait for iceberg-init to complete
         run: |
           echo "Waiting for iceberg-init container to finish seeding..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 36); do
             STATUS=$(docker inspect --format='{{.State.Status}}' iceberg-init 2>/dev/null || echo "missing")
             if [ "$STATUS" = "exited" ]; then
               EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' iceberg-init)
@@ -106,13 +96,23 @@ jobs:
             sleep 5
           done
 
+      - name: Upload PySpark curation scripts to MinIO
+        # Required by curate_submit_reaches_success_state which submits
+        # gold_daily_revenue.py as s3a://warehouse/scripts/gold_daily_revenue.py
+        run: |
+          docker exec mc mc cp /home/iceberg/scripts/gold_daily_revenue.py \
+            minio/warehouse/scripts/gold_daily_revenue.py
+          docker exec mc mc cp /home/iceberg/scripts/silver_orders.py \
+            minio/warehouse/scripts/silver_orders.py
+          echo "Scripts uploaded to MinIO"
+
       - name: Show service health summary
         run: |
           echo "=== Service status ==="
           docker compose ps
           echo ""
-          echo "=== Iceberg REST catalog tables ==="
-          curl -s http://localhost:8181/v1/namespaces || true
+          echo "=== Iceberg REST catalog namespaces ==="
+          curl -s http://localhost:8181/v1/namespaces | python3 -m json.tool || true
           echo ""
           echo "=== Livy sessions ==="
           curl -s http://localhost:8998/sessions | python3 -m json.tool || true
@@ -133,8 +133,10 @@ jobs:
       - name: Dump logs on failure
         if: failure()
         run: |
-          echo "=== spark-iceberg logs ==="
-          docker logs spark-iceberg --tail 100
+          echo "=== spark-iceberg logs (includes Livy) ==="
+          docker logs spark-iceberg --tail 150
+          echo "=== Livy sessions at failure time ==="
+          curl -s http://localhost:8998/sessions | python3 -m json.tool || true
           echo "=== iceberg-init logs ==="
           docker logs iceberg-init --tail 50
           echo "=== postgres logs ==="

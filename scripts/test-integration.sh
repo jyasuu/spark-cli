@@ -60,26 +60,16 @@ cleanup() {
 trap cleanup EXIT
 
 info "Starting docker-compose services..."
-docker compose up -d
+docker compose up -d --wait
 
-# ── wait for Livy ──────────────────────────────────────────────────────────
-info "Waiting for Livy (port 8998)..."
-LIVY_READY=false
-for i in $(seq 1 72); do  # 72 × 5s = 6 minutes max
-  if curl -sf http://localhost:8998/batches > /dev/null 2>&1; then
-    LIVY_READY=true
-    info "Livy ready after $((i * 5))s"
-    break
-  fi
-  printf '.'
-  sleep 5
-done
-echo ""
-if ! $LIVY_READY; then
-  error "Livy did not become ready in 6 minutes."
-  docker logs spark-iceberg --tail 50
-  exit 1
-fi
+# ── upload PySpark scripts to MinIO ────────────────────────────────────────
+# Required by curate_submit_reaches_success_state (batch job test).
+info "Uploading PySpark scripts to MinIO..."
+docker exec mc mc cp /home/iceberg/scripts/gold_daily_revenue.py \
+  minio/warehouse/scripts/gold_daily_revenue.py
+docker exec mc mc cp /home/iceberg/scripts/silver_orders.py \
+  minio/warehouse/scripts/silver_orders.py
+info "Scripts ready in MinIO."
 
 # ── wait for iceberg-init ──────────────────────────────────────────────────
 info "Waiting for iceberg-init seed container..."
