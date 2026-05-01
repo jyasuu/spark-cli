@@ -1,8 +1,8 @@
 services:
-  # ── Spark + Livy ─────────────────────────────────────────────
-  # tabulario/spark-iceberg ships Livy on :8998.  Expose the port and add a
-  # healthcheck so `docker compose up --wait` (and the CI workflow) blocks
-  # until Livy is fully ready before running any tests.
+  # ── Spark + Livy ─────────────────────────────────────────────────────────────
+  # spark/Dockerfile extends tabulario/spark-iceberg and installs Apache Livy 0.8.0.
+  # The custom entrypoint starts Livy on :8998 before handing off to spark-iceberg
+  # original entrypoint so Jupyter/Thrift/SparkUI all still work.
   spark-iceberg:
     image: tabulario/spark-iceberg
     container_name: spark-iceberg
