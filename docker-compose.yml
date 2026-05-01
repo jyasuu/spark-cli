@@ -4,7 +4,6 @@ services:
   # The custom entrypoint starts Livy on :8998 before handing off to spark-iceberg
   # original entrypoint so Jupyter/Thrift/SparkUI all still work.
   spark-iceberg:
-    image: tabulario/spark-iceberg
     container_name: spark-iceberg
     build: spark/
     networks:
