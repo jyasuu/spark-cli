@@ -6,6 +6,15 @@ mod notify;
 mod gantt;
 mod webhdfs;
 
+// Test utilities — compiled only when running `cargo test` (or with the
+// `integration` feature for the docker-compose end-to-end suite).
+#[cfg(test)]
+pub mod testing;
+
+// Internal test suites.
+#[cfg(test)]
+mod tests;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;

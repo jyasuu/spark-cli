@@ -22,3 +22,15 @@ tabled     = "=0.14.0"
 chrono     = { version = "=0.4.44", features = ["serde"] }
 clap       = { version = "=4.4.18", features = ["derive", "env", "color"] }
 base64     = "=0.21.7"
+
+[dev-dependencies]
+# Async test runtime (same tokio already in [dependencies] — just the macro)
+tokio      = { version = "=1.52.1", features = ["full", "test-util"] }
+# Pretty assertion diffs
+pretty_assertions = "1"
+
+# Integration tests are gated behind this feature so `cargo test` alone runs
+# only unit tests.  Use `cargo test --features integration` (or the CI job) to
+# bring up the full docker-compose stack and run end-to-end scenarios.
+[features]
+integration = []

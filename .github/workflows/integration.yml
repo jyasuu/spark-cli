@@ -1,0 +1,145 @@
+name: spark-ctrl CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Job 1: unit tests (no docker, always fast) ──────────────────────────────
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (warnings as errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Unit tests
+        run: cargo test
+        # MockLivy handles all HTTP calls in-process — zero external dependencies.
+
+  # ── Job 2: integration tests (docker-compose stack) ─────────────────────────
+  integration-tests:
+    name: Integration tests (docker-compose)
+    runs-on: ubuntu-latest
+    # Only run on pushes to main/dev — PRs use unit tests only for speed
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integ-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── Bring up the full stack ─────────────────────────────────────────────
+      - name: Start docker-compose services
+        run: docker compose up -d --wait
+        # docker compose v2 --wait polls healthchecks before returning.
+        # Services: spark-iceberg, iceberg-rest, minio, mc, postgres, rabbitmq, iceberg-init
+
+      - name: Wait for Livy to be ready
+        run: |
+          echo "Waiting for Livy on :8998..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8998/batches > /dev/null 2>&1; then
+              echo "Livy is up after ${i}s"
+              break
+            fi
+            sleep 5
+          done
+          curl -sf http://localhost:8998/batches || (echo "Livy not ready" && exit 1)
+
+      - name: Wait for iceberg-init to complete
+        run: |
+          echo "Waiting for iceberg-init container to finish seeding..."
+          for i in $(seq 1 30); do
+            STATUS=$(docker inspect --format='{{.State.Status}}' iceberg-init 2>/dev/null || echo "missing")
+            if [ "$STATUS" = "exited" ]; then
+              EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' iceberg-init)
+              if [ "$EXIT_CODE" = "0" ]; then
+                echo "iceberg-init finished successfully"
+                break
+              else
+                echo "iceberg-init exited with code $EXIT_CODE"
+                docker logs iceberg-init
+                exit 1
+              fi
+            fi
+            sleep 5
+          done
+
+      - name: Show service health summary
+        run: |
+          echo "=== Service status ==="
+          docker compose ps
+          echo ""
+          echo "=== Iceberg REST catalog tables ==="
+          curl -s http://localhost:8181/v1/namespaces || true
+          echo ""
+          echo "=== Livy sessions ==="
+          curl -s http://localhost:8998/sessions | python3 -m json.tool || true
+
+      # ── Run integration tests ───────────────────────────────────────────────
+      - name: Run integration tests
+        env:
+          SPARK_CTRL_INTEGRATION: "1"
+          LIVY_URL: "http://localhost:8998"
+          ICEBERG_URL: "http://localhost:8181"
+          MINIO_URL: "http://localhost:9000"
+          POSTGRES_DSN: "host=localhost port=5432 dbname=shop user=app password=secret sslmode=disable"
+          SPARK_THRIFT: "localhost:10000"
+        run: |
+          cargo test --features integration -- --nocapture
+
+      # ── Teardown ────────────────────────────────────────────────────────────
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== spark-iceberg logs ==="
+          docker logs spark-iceberg --tail 100
+          echo "=== iceberg-init logs ==="
+          docker logs iceberg-init --tail 50
+          echo "=== postgres logs ==="
+          docker logs iceberg-postgres --tail 30
+
+      - name: Stop docker-compose services
+        if: always()
+        run: docker compose down -v
