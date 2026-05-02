@@ -398,9 +398,11 @@ async fn curate_submit_reaches_success_state() {
     .await
     .expect("count query failed");
     let text = crate::commands::session::extract_text(&out).unwrap_or_default();
+    // one_shot_sql uses pyspark collect → tab-separated rows; parse first integer cell.
     let count: u64 = text
         .lines()
-        .filter_map(|l| l.trim().parse().ok())
+        .flat_map(|l| l.split('\t'))
+        .filter_map(|cell| cell.trim().parse().ok())
         .next()
         .unwrap_or(0);
 

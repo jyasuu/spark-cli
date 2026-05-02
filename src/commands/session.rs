@@ -45,12 +45,21 @@ pub async fn run_sql(
     client.run_statement(session_id, sql, auth).await
 }
 
-/// Convenience: open a `"sql"` session, run one statement, delete the
-/// session, and return the raw result.  Use when you only need a single
-/// round-trip and don't want to manage the session lifetime yourself.
+/// Convenience: open a `"pyspark"` session, run one SQL statement via
+/// `spark.sql(...)`, delete the session, and return the raw result.  Use
+/// when you only need a single round-trip and don't want to manage the
+/// session lifetime yourself.
+///
+/// Uses `"pyspark"` (not `"sql"`) so that `spark.sql.catalog.*` conf keys —
+/// including the Iceberg REST catalog — are honoured by the full SparkSession.
 pub async fn one_shot_sql(client: &LivyClient, sql: &str, auth: &Auth) -> Result<StatementResult> {
-    let sid = open_session(client, "sql", auth).await?;
-    let result = run_sql(client, sid, sql, auth).await;
+    let sid = open_session(client, "pyspark", auth).await?;
+    let escaped = sql.replace('\\', "\\\\").replace('\'', "\\'");
+    let code = format!(
+        "_rows = spark.sql('{escaped}').collect(); \
+         '\\n'.join(['\\t'.join(str(v) for v in r) for r in _rows]) if _rows else ''"
+    );
+    let result = run_sql(client, sid, &code, auth).await;
     client.delete_session(sid, auth).await.ok();
     result
 }

@@ -71,9 +71,12 @@ async fn products_table_has_at_least_one_snapshot() {
 
     let out = sql(&client, &env, snapshot_sql).await;
 
-    // iceberg-init writes a full-load snapshot, so there must be at least one row
+    // iceberg-init writes a full-load snapshot, so there must be at least one row.
+    // Output is tab-separated: snapshot_id\tcommitted_at\toperation
+    // We just check the whole string for any known operation keyword.
+    let out_lower = out.to_lowercase();
     assert!(
-        out.contains("OVERWRITE") || out.contains("append") || out.contains("replace"),
+        out_lower.contains("overwrite") || out_lower.contains("append") || out_lower.contains("replace"),
         "expected at least one snapshot row (operation column), got:\n{out}"
     );
 }
@@ -102,9 +105,10 @@ async fn orders_table_has_at_least_one_snapshot() {
     )
     .await;
 
+    // Output is tab-separated rows; any non-empty output means at least one snapshot exists.
     assert!(
         !out.trim().is_empty(),
-        "demo.orders.snapshots returned no rows — was iceberg-init run?"
+        "demo.orders.snapshots returned no rows — was iceberg-init run?\n{out}"
     );
 }
 
@@ -191,11 +195,10 @@ async fn fs_table_snapshots_sql_branch_returns_rows() {
 
     let out = sql(&client, &env, &sql_str).await;
 
-    // Should have at least one data row (not just headers / empty string)
-    let data_lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-
+    // Output is tab-separated rows (snapshot_id\tcommitted_at\toperation per line).
+    // Any non-empty output means at least one snapshot was returned.
     assert!(
-        !data_lines.is_empty(),
+        !out.trim().is_empty(),
         "snapshot query returned no output for {table}:\n{out}"
     );
 }
