@@ -195,6 +195,8 @@ async fn fs_table_snapshots_sql_branch_returns_rows() {
 
     let out = sql(&client, &env, &sql_str).await;
 
+    println!("out: {out}");
+
     // Output is tab-separated rows (snapshot_id\tcommitted_at\toperation per line).
     // Any non-empty output means at least one snapshot was returned.
     assert!(

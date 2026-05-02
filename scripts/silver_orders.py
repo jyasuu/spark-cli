@@ -20,6 +20,10 @@ spark = (
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel("WARN")
+# Set active catalog and namespace so two-part names like `demo.products`
+# resolve as catalog=demo, namespace=demo, table=products against the REST catalog.
+spark.catalog.setCurrentCatalog("demo")
+spark.catalog.setCurrentDatabase("demo")
 
 # ── 1. Read raw layer ──────────────────────────────────────────────────────────
 raw = spark.table("demo.orders")

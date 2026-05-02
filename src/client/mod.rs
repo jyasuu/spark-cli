@@ -97,6 +97,7 @@ impl LivyClient {
 
     pub async fn submit_batch(&self, req: &BatchRequest, auth: &Auth) -> Result<BatchInfo> {
         let url = format!("{}/batches", self.base_url);
+        println!("submit_batch url: {url}");
         let body = req.clone();
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || post_json(&url, &body, &auth)).await?
@@ -104,12 +105,14 @@ impl LivyClient {
 
     pub async fn get_batch(&self, id: u64, auth: &Auth) -> Result<BatchInfo> {
         let url = format!("{}/batches/{}", self.base_url, id);
+        println!("get_batch url: {url}");
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || get_json(&url, &auth)).await?
     }
 
     pub async fn list_batches(&self, auth: &Auth) -> Result<Vec<BatchInfo>> {
         let url = format!("{}/batches", self.base_url);
+        println!("list_batches url: {url}");
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<BatchInfo>> {
             #[derive(Deserialize)]
@@ -125,6 +128,7 @@ impl LivyClient {
 
     pub async fn delete_batch(&self, id: u64, auth: &Auth) -> Result<()> {
         let url = format!("{}/batches/{}", self.base_url, id);
+        println!("delete_batch url: {url}");
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || delete(&url, &auth)).await?
     }
@@ -140,6 +144,7 @@ impl LivyClient {
             "{}/batches/{}/log?from={}&size={}",
             self.base_url, id, from, size
         );
+        println!("get_batch_log url: {url}");
         let auth = auth.clone();
         tokio::task::spawn_blocking(move || get_json(&url, &auth)).await?
     }
@@ -156,6 +161,8 @@ impl LivyClient {
             "spark.sql.catalog.demo.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
             "spark.sql.catalog.demo.warehouse": "s3a://warehouse/",
             "spark.sql.catalog.demo.s3.endpoint": "http://minio:9000",
+            "spark.sql.catalog.demo.default-namespace": "demo",
+            "spark.sql.defaultCatalog": "demo",
             "spark.hadoop.fs.s3a.endpoint": "http://minio:9000",
             "spark.hadoop.fs.s3a.access.key": "admin",
             "spark.hadoop.fs.s3a.secret.key": "password",

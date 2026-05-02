@@ -327,6 +327,8 @@ async fn curate_submit_reaches_success_state() {
         ),
         ("spark.sql.catalog.demo.warehouse", "s3a://warehouse/"),
         ("spark.sql.catalog.demo.s3.endpoint", "http://minio:9000"),
+        ("spark.sql.catalog.demo.default-namespace", "demo"),
+        ("spark.sql.defaultCatalog", "demo"),
         ("spark.hadoop.fs.s3a.access.key", "admin"),
         ("spark.hadoop.fs.s3a.secret.key", "password"),
         ("spark.hadoop.fs.s3a.endpoint", "http://minio:9000"),

@@ -26,7 +26,7 @@ services:
       - 8080:8080
       - 10000:10000
       - 10001:10001
-      - 8998:8998   # Livy REST API
+      - 8998:8998 # Livy REST API
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8998/batches"]
       interval: 15s
@@ -162,6 +162,7 @@ services:
         set -e
         CLI="iceberg-cli --uri http://rest:8181 --s3-endpoint http://minio:9000"
 
+        sleep 10
         echo "==> Syncing tables..."
         $$CLI sync --config /sync-init.yaml
 
@@ -184,7 +185,7 @@ services:
 
         echo ""
         echo "==> Done."
-    restart: "no"
+    restart: on-failure
     environment:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password

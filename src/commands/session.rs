@@ -54,6 +54,13 @@ pub async fn run_sql(
 /// including the Iceberg REST catalog — are honoured by the full SparkSession.
 pub async fn one_shot_sql(client: &LivyClient, sql: &str, auth: &Auth) -> Result<StatementResult> {
     let sid = open_session(client, "pyspark", auth).await?;
+    // Set the default namespace on the demo catalog so two-part names like
+    // `demo.orders` resolve as catalog=demo, namespace=demo, table=orders.
+    // spark.conf.set() can update session-scoped conf at runtime, unlike
+    // static SparkConf keys that are frozen at SparkContext startup.
+    run_sql(client, sid,
+        "spark.conf.set('spark.sql.catalog.demo.default-namespace', 'demo')",
+        auth).await.ok();
     let escaped = sql.replace('\\', "\\\\").replace('\'', "\\'");
     let code = format!(
         "_rows = spark.sql('{escaped}').collect(); \
